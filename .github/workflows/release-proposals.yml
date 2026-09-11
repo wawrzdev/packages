@@ -1,0 +1,85 @@
+name: propose package updates
+
+on:
+  push:
+  repository_dispatch:
+    types:
+      - secret-release-published
+      - snip-release-published
+      - wtf-release-published
+  workflow_dispatch: {}
+  schedule:
+    - cron: "47 5 * * *"
+
+permissions:
+  contents: read
+
+# Reconcile every source when a slot opens; GitHub may replace a pending run.
+concurrency:
+  group: packages-proposals-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.prepare.outputs.changed }}
+      base_sha: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Install native package reader
+        run: sudo apt-get update && sudo apt-get install --yes zstd
+      - name: Reconcile all allowlisted source releases
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          args=(--manifest manifests/releases.json --output build/proposal)
+          if [ "$EVENT_NAME" = repository_dispatch ]; then args+=(--event "$GITHUB_EVENT_PATH"); fi
+          python3 scripts/prepare_release_pr.py "${args[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.prepare.outputs.changed == 'true'
+        with:
+          name: source-proposal
+          path: build/proposal
+          if-no-files-found: error
+          retention-days: 1
+
+  validate-homebrew:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source-proposal
+          path: build/proposal
+      - name: Audit, install, and test generated formulas
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          validation_tap="$(brew --repository)/Library/Taps/wawrzdev/homebrew-validation"
+          mkdir -p "$validation_tap/Formula"
+          git -C "$validation_tap" init
+          cp build/proposal/Formula/*.rb "$validation_tap/Formula/"
+          brew style wawrzdev/validation
+          for formula in build/proposal/Formula/*.rb; do
+            name="wawrzdev/validation/$(basename "$formula" .rb)"
+            brew audit --strict "$name"
+            brew install "$name"
+            brew test "$name"
+          done
+
+  propose:
+    needs: [prepare, validate-homebrew]
+    if: needs.prepare.outputs.changed == 'true'
+    uses: ./.github/workflows/write-update-pr.yml
+    with:
+      kind: releases
+      base_sha: ${{ needs.prepare.outputs.base_sha }}
