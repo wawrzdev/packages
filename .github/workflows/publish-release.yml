@@ -58,7 +58,6 @@ jobs:
     needs: validate
     if: needs.validate.outputs.changed == 'true'
     runs-on: ubuntu-latest
-    container: ghcr.io/homebrew/brew@sha256:613f2f524c4d1fb8fe37dbe7a5581392c89e7865bac725bab0d8e24309ae6d7c
     defaults:
       run:
         shell: bash
@@ -72,10 +71,18 @@ jobs:
       - name: Audit, install, and test generated formula
         run: |
           if compgen -G 'build/Formula/*.rb' >/dev/null; then
-            brew style build/Formula/*.rb
-            brew audit --strict build/Formula/*.rb
-            brew install --formula build/Formula/*.rb
-            for formula in build/Formula/*.rb; do brew test "$(basename "$formula" .rb)"; done
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+            validation_tap="$(brew --repository)/Library/Taps/wawrzdev/homebrew-validation"
+            mkdir -p "$validation_tap/Formula"
+            git -C "$validation_tap" init
+            cp build/Formula/*.rb "$validation_tap/Formula/"
+            brew style wawrzdev/validation
+            for formula in build/Formula/*.rb; do
+              name="wawrzdev/validation/$(basename "$formula" .rb)"
+              brew audit --strict "$name"
+              brew install "$name"
+              brew test "$name"
+            done
           fi
 
   sign-packages:
@@ -123,7 +130,7 @@ jobs:
         run: |
           sudo add-apt-repository --yes universe
           sudo apt-get update
-          sudo apt-get install --yes pacman-package-manager
+          sudo apt-get install --yes pacman-package-manager libarchive-tools
       - name: Build package and file indexes without private keys
         run: bash scripts/build-pacman-repositories.sh build/site
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

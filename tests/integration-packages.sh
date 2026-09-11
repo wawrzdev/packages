@@ -108,6 +108,9 @@ expect_apt_update_failure inrelease
 cp "$test_root/InRelease.good" "$test_root/site/apt/dists/stable/InRelease"
 
 mv "$test_root/site/apt/dists/stable/InRelease" "$test_root/InRelease.hidden"
+# Prove the detached-signature fallback works before testing its corruption.
+sudo apt-get update -o Dir::Etc::sourcelist="$apt_source" -o Dir::Etc::sourceparts="-" \
+  -o Dir::State::lists="$test_root/apt-lists-fallback" -o APT::Update::Error-Mode=any
 cp "$test_root/site/apt/dists/stable/Release.gpg" "$test_root/Release.gpg.good"
 corrupt_file "$test_root/site/apt/dists/stable/Release.gpg"
 expect_apt_update_failure release-signature
@@ -117,8 +120,11 @@ mv "$test_root/InRelease.hidden" "$test_root/site/apt/dists/stable/InRelease"
 packages_index="$test_root/site/apt/dists/stable/main/binary-amd64/Packages"
 cp "$packages_index" "$test_root/Packages.good"
 printf 'tamper' >> "$packages_index"
+# Force the uncompressed index by making the compressed alternative unavailable.
+mv "$packages_index.gz" "$test_root/Packages.gz.good"
 expect_apt_update_failure packages -o Acquire::By-Hash=false -o Acquire::CompressionTypes::Order::=uncompressed
 cp "$test_root/Packages.good" "$packages_index"
+mv "$test_root/Packages.gz.good" "$packages_index.gz"
 
 while IFS= read -r -d '' by_hash; do
   printf 'tamper' >> "$by_hash"
