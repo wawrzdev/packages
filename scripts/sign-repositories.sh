@@ -46,9 +46,10 @@ fi
 sign_detached() {
   local input=$1
   local output=$2
+  shift 2
   rm -f "$output"
   printf '%s\n' "$PACKAGES_GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
-    --passphrase-fd 0 --local-user "$PACKAGES_GPG_FINGERPRINT!" --detach-sign --output "$output" "$input"
+    --passphrase-fd 0 --local-user "$PACKAGES_GPG_FINGERPRINT!" --detach-sign "$@" --output "$output" "$input"
   verify_exact "$output" "$input"
 }
 
@@ -78,7 +79,7 @@ else
     --passphrase-fd 0 --local-user "$PACKAGES_GPG_FINGERPRINT!" --clearsign \
     --output "$site/apt/dists/stable/InRelease" "$release"
   verify_exact "$site/apt/dists/stable/InRelease"
-  sign_detached "$release" "$site/apt/dists/stable/Release.gpg"
+  sign_detached "$release" "$site/apt/dists/stable/Release.gpg" --armor
 
   while IFS= read -r -d '' database; do
     sign_detached "$database" "$database.sig"
