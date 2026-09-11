@@ -8,7 +8,7 @@ server_pid=
 cleanup() {
   if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; fi
   sudo rm -f "$apt_source" "$apt_key"
-  rm -rf "$test_root"
+  sudo rm -rf "$test_root"
 }
 trap cleanup EXIT
 
@@ -87,8 +87,8 @@ sudo apt-get update -o Dir::Etc::sourcelist="$apt_source" -o Dir::Etc::sourcepar
 mkdir "$test_root/apt-download"
 (cd "$test_root/apt-download" && apt-get download secret)
 (cd "$test_root/apt-download" && apt-get download secret:arm64)
-test -s "$test_root/apt-download/secret_1.2.3_linux_amd64.deb"
-test -s "$test_root/apt-download/secret_1.2.3_linux_arm64.deb"
+test -s "$test_root/apt-download/secret_1.2.3_amd64.deb"
+test -s "$test_root/apt-download/secret_1.2.3_arm64.deb"
 
 expect_apt_update_failure() {
   local label=$1
@@ -134,27 +134,27 @@ fi
 
 mkdir -p "$test_root/pacman-root" "$test_root/pacman-db" "$test_root/pacman-cache" "$test_root/pacman-gpg"
 chmod 700 "$test_root/pacman-gpg"
-pacman-key --gpgdir "$test_root/pacman-gpg" --init
-pacman-key --gpgdir "$test_root/pacman-gpg" --add "$test_root/site/keys/wawrzdev-packages.gpg"
-pacman-key --gpgdir "$test_root/pacman-gpg" --lsign-key "$signer"
+sudo pacman-key --gpgdir "$test_root/pacman-gpg" --init
+sudo pacman-key --gpgdir "$test_root/pacman-gpg" --add "$test_root/site/keys/wawrzdev-packages.gpg"
+sudo pacman-key --gpgdir "$test_root/pacman-gpg" --lsign-key "$signer"
 sed -e "s|@ROOT@|$test_root|g" -e 's|@ARCH@|x86_64|g' tests/pacman-ci.conf > "$test_root/pacman.conf"
-pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sy
-pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sw secret
-pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" -Fl secret | grep -F 'secret usr/bin/secret'
-pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" -Fy
-pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" -F usr/bin/secret | grep -F secret
+sudo pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sy
+sudo pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sw secret
+sudo pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" -Fy
+sudo pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" -Fl secret | grep -F 'secret usr/bin/secret'
+sudo pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" -F usr/bin/secret | grep -F secret
 
 mkdir -p "$test_root/pacman-arm-root" "$test_root/pacman-arm-db" "$test_root/pacman-arm-cache"
 sed -e "s|@ROOT@|$test_root|g" -e 's|@ARCH@|aarch64|g' \
   -e "s|pacman-cache|pacman-arm-cache|g" tests/pacman-ci.conf > "$test_root/pacman-arm.conf"
-pacman --config "$test_root/pacman-arm.conf" --root "$test_root/pacman-arm-root" --dbpath "$test_root/pacman-arm-db" --noconfirm -Sy
-pacman --config "$test_root/pacman-arm.conf" --root "$test_root/pacman-arm-root" --dbpath "$test_root/pacman-arm-db" --noconfirm -Sw secret
+sudo pacman --config "$test_root/pacman-arm.conf" --root "$test_root/pacman-arm-root" --dbpath "$test_root/pacman-arm-db" --noconfirm -Sy
+sudo pacman --config "$test_root/pacman-arm.conf" --root "$test_root/pacman-arm-root" --dbpath "$test_root/pacman-arm-db" --noconfirm -Sw secret
 test -s "$test_root/pacman-arm-cache/secret_1.2.3_linux_arm64.pkg.tar.zst"
 
 expect_pacman_sync_failure() {
   local label=$1
-  rm -f "$test_root/pacman-db/sync/wawrzdev.db" "$test_root/pacman-db/sync/wawrzdev.db.sig"
-  if pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sy; then
+  sudo rm -f "$test_root/pacman-db/sync/wawrzdev.db" "$test_root/pacman-db/sync/wawrzdev.db.sig"
+  if sudo pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sy; then
     echo "pacman accepted tampered $label" >&2
     exit 1
   fi
@@ -181,8 +181,8 @@ fi
 cp "$test_root/package.sig.good" "$package_signature"
 
 printf 'tamper' >> "$test_root/site/pacman/x86_64/secret_1.2.3_linux_amd64.pkg.tar.zst"
-rm -f "$test_root/pacman-cache"/*
-if pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sw secret; then
+sudo rm -f "$test_root/pacman-cache"/*
+if sudo pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sw secret; then
   echo "pacman accepted a tampered package" >&2
   exit 1
 fi
