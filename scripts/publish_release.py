@@ -474,19 +474,13 @@ def deb_control(path: Path) -> dict[str, str]:
     compressed = read_ar_member(path, "control.tar")
     data_archive = read_ar_member(path, "data.tar")
     validate_tar_bytes(data_archive, "Debian data archive")
-    compressed = decompressed_tar_bytes(compressed, "Debian control archive")
     try:
-        with tarfile.open(fileobj=io.BytesIO(compressed), mode="r:*") as archive:
-            members = archive.getmembers()
-            for member in members:
-                pure = PurePosixPath(member.name)
-                if pure.is_absolute() or ".." in pure.parts or member.issym() or member.islnk():
-                    raise PublishError("unsafe Debian control archive")
-            member = next((m for m in members if m.name.removeprefix("./") == "control" and m.isfile()), None)
-            if member is None or member.size > 64 * 1024:
-                raise PublishError("Debian control file is missing or too large")
-            raw = archive.extractfile(member).read().decode("utf-8")
-    except (tarfile.TarError, UnicodeDecodeError) as exc:
+        entries = tar_entries(compressed, "Debian control archive")
+        control = entries.get("control")
+        if control is None or control[0].size > 64 * 1024:
+            raise PublishError("Debian control file is missing or too large")
+        raw = control[1].decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise PublishError("invalid Debian control archive") from exc
     fields: dict[str, str] = {}
     for line in raw.splitlines():
