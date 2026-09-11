@@ -175,19 +175,26 @@ def safe_archive_members(path: Path) -> dict[str, tarfile.TarInfo]:
         members = archive.getmembers()
         total = 0
         seen = set()
+        root_seen = False
         for member in members:
             pure = PurePosixPath(member.name)
-            canonical = member.name.removeprefix("./").rstrip("/")
-            if (pure.is_absolute() or ".." in pure.parts or not canonical or canonical in seen
-                    or not (member.isfile() or member.isdir())):
+            canonical = pure.as_posix()
+            root_directory = member.isdir() and canonical in ("", ".")
+            if (pure.is_absolute() or ".." in pure.parts or (not root_directory and canonical in ("", "."))
+                    or (not root_directory and canonical in seen) or not (member.isfile() or member.isdir())):
                 raise PublishError(f"unsafe archive member in {path.name}: {member.name}")
-            seen.add(canonical)
+            if root_directory:
+                if root_seen:
+                    raise PublishError(f"duplicate archive root in {path.name}")
+                root_seen = True
+            else:
+                seen.add(canonical)
             if member.size > MAX_ASSET_SIZE:
                 raise PublishError(f"oversized archive member in {path.name}: {member.name}")
             total += member.size
         if total > MAX_ARCHIVE_CONTENT:
             raise PublishError(f"uncompressed archive is too large: {path.name}")
-        return {m.name.removeprefix("./"): m for m in members if m.isfile()}
+        return {PurePosixPath(m.name).as_posix(): m for m in members if m.isfile()}
 
 
 def validate_binary(data: bytes, os_name: str, arch: str) -> None:
@@ -511,20 +518,27 @@ def tar_entries(data: bytes, label: str) -> dict[str, tuple[tarfile.TarInfo, byt
     entries = {}
     total = 0
     seen = set()
+    root_seen = False
     try:
         with tarfile.open(fileobj=io.BytesIO(decompressed_tar_bytes(data, label)), mode="r:*") as archive:
             for member in archive.getmembers():
                 pure = PurePosixPath(member.name)
-                canonical = member.name.removeprefix("./").rstrip("/")
-                if (pure.is_absolute() or ".." in pure.parts or not canonical or canonical in seen
-                        or not (member.isfile() or member.isdir())):
+                canonical = pure.as_posix()
+                root_directory = member.isdir() and canonical in ("", ".")
+                if (pure.is_absolute() or ".." in pure.parts or (not root_directory and canonical in ("", "."))
+                        or (not root_directory and canonical in seen) or not (member.isfile() or member.isdir())):
                     raise PublishError(f"unsafe member in {label}: {member.name}")
-                seen.add(canonical)
+                if root_directory:
+                    if root_seen:
+                        raise PublishError(f"duplicate archive root in {label}")
+                    root_seen = True
+                else:
+                    seen.add(canonical)
                 total += member.size
                 if member.size > MAX_ASSET_SIZE or total > MAX_ARCHIVE_CONTENT:
                     raise PublishError(f"uncompressed {label} is too large")
                 if member.isfile():
-                    entries[member.name.removeprefix("./")] = (member, archive.extractfile(member).read())
+                    entries[canonical] = (member, archive.extractfile(member).read())
     except tarfile.TarError as exc:
         raise PublishError(f"invalid {label}") from exc
     return entries

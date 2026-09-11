@@ -186,16 +186,39 @@ class PublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(publisher.PublishError, "unsafe archive"):
                 publisher.safe_archive_members(special)
 
-            duplicate = root / "duplicate.tar.gz"
+            for index, names in enumerate((("secret", "././secret"), ("a/b", "a//b"), ("a/b", "a/./b"))):
+                duplicate = root / f"duplicate-{index}.tar.gz"
+                stream = io.BytesIO()
+                with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+                    for name in names:
+                        info = tarfile.TarInfo(name)
+                        info.size = 1
+                        archive.addfile(info, io.BytesIO(b"x"))
+                duplicate.write_bytes(stream.getvalue())
+                with self.assertRaisesRegex(publisher.PublishError, "unsafe archive"):
+                    publisher.safe_archive_members(duplicate)
+
+    def test_native_tar_parser_rejects_canonical_path_aliases(self):
+        for names in (("secret", "././secret"), ("a/b", "a//b"), ("a/b", "a/./b")):
             stream = io.BytesIO()
-            with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-                for name in ("secret", "./secret"):
+            with tarfile.open(fileobj=stream, mode="w:") as archive:
+                for name in names:
                     info = tarfile.TarInfo(name)
                     info.size = 1
                     archive.addfile(info, io.BytesIO(b"x"))
-            duplicate.write_bytes(stream.getvalue())
-            with self.assertRaisesRegex(publisher.PublishError, "unsafe archive"):
-                publisher.safe_archive_members(duplicate)
+            with self.assertRaisesRegex(publisher.PublishError, "unsafe member"):
+                publisher.tar_entries(stream.getvalue(), "test package")
+
+    def test_tar_parser_allows_root_directory_entry(self):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w:") as archive:
+            root = tarfile.TarInfo("./")
+            root.type = tarfile.DIRTYPE
+            archive.addfile(root)
+            item = tarfile.TarInfo("./usr/bin/secret")
+            item.size = 1
+            archive.addfile(item, io.BytesIO(b"x"))
+        self.assertIn("usr/bin/secret", publisher.tar_entries(stream.getvalue(), "test package"))
 
     def test_debian_package_rejects_data_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
