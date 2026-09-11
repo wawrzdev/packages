@@ -166,6 +166,37 @@ class PublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(publisher.PublishError, "not executable"):
                 publisher.validate_archive_contents("secret", "linux", "amd64", path)
 
+    def test_archive_rejects_nested_completion_special_and_duplicate_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nested = root / "nested.tar.gz"
+            files = {"secret": fake_binary("linux", "amd64"), "completions/nested/secret.bash": b"x",
+                     "completions/_secret": b"x", "completions/secret.fish": b"x"}
+            nested.write_bytes(tar_bytes(files, modes={"secret": 0o755}))
+            with self.assertRaisesRegex(publisher.PublishError, "unexpected completion"):
+                publisher.validate_archive_contents("secret", "linux", "amd64", nested)
+
+            special = root / "special.tar.gz"
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+                fifo = tarfile.TarInfo("fifo")
+                fifo.type = tarfile.FIFOTYPE
+                archive.addfile(fifo)
+            special.write_bytes(stream.getvalue())
+            with self.assertRaisesRegex(publisher.PublishError, "unsafe archive"):
+                publisher.safe_archive_members(special)
+
+            duplicate = root / "duplicate.tar.gz"
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+                for name in ("secret", "./secret"):
+                    info = tarfile.TarInfo(name)
+                    info.size = 1
+                    archive.addfile(info, io.BytesIO(b"x"))
+            duplicate.write_bytes(stream.getvalue())
+            with self.assertRaisesRegex(publisher.PublishError, "unsafe archive"):
+                publisher.safe_archive_members(duplicate)
+
     def test_debian_package_rejects_data_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad.deb"
@@ -275,6 +306,16 @@ class PublisherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "index.html").write_text("unexpected")
+            with self.assertRaisesRegex(ValueError, "unexpected Pages file"):
+                validate_site.validate(root)
+
+    def test_pages_allowlist_rejects_hardlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "keys/wawrzdev-packages.gpg"
+            first.parent.mkdir(parents=True)
+            first.write_bytes(b"key")
+            os.link(first, root / "keys/wawrzdev-packages.asc")
             with self.assertRaisesRegex(ValueError, "unexpected Pages file"):
                 validate_site.validate(root)
 
