@@ -403,8 +403,8 @@ def formula_text(release: VerifiedRelease, url_root: str | None = None) -> str:
     }[app]
     dependencies = {
         "secret": "",
-        "snip": '\n  depends_on "git"\n  depends_on "fzf"\n  depends_on "gh"\n\n',
-        "wtf": '\n  depends_on "fzf"\n\n',
+        "snip": '\n  depends_on "fzf"\n  depends_on "gh"\n  depends_on "git"\n',
+        "wtf": '\n  depends_on "fzf"\n',
     }[app]
     class_name = "".join(part.capitalize() for part in app.split("-"))
     release_url = url_root or f"https://github.com/{release.repo}/releases/download/{release.tag}"

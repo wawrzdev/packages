@@ -49,24 +49,18 @@ jobs:
         run: |
           sudo add-apt-repository --yes universe
           sudo apt-get update
-          sudo apt-get install --yes gnupg pacman-package-manager zstd
+          sudo apt-get install --yes gnupg pacman-package-manager libarchive-tools zstd
           bash tests/integration-packages.sh
 
   homebrew-macos:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: python3 tests/render-homebrew-fixture.py /tmp/homebrew-fixture
-      - run: brew style /tmp/homebrew-fixture/*.rb
-      - run: brew install --formula /tmp/homebrew-fixture/*.rb
-      - run: for formula in secret snip wtf; do brew test "$formula"; done
+      - run: bash tests/integration-homebrew.sh
 
   homebrew-linux:
     runs-on: ubuntu-latest
-    container: ghcr.io/homebrew/brew@sha256:613f2f524c4d1fb8fe37dbe7a5581392c89e7865bac725bab0d8e24309ae6d7c
     steps:
+      - run: echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: python3 tests/render-homebrew-fixture.py /tmp/homebrew-fixture
-      - run: brew style /tmp/homebrew-fixture/*.rb
-      - run: brew install --formula /tmp/homebrew-fixture/*.rb
-      - run: for formula in secret snip wtf; do brew test "$formula"; done
+      - run: bash tests/integration-homebrew.sh
