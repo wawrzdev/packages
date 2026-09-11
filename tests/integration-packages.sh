@@ -109,6 +109,7 @@ cp "$test_root/InRelease.good" "$test_root/site/apt/dists/stable/InRelease"
 
 mv "$test_root/site/apt/dists/stable/InRelease" "$test_root/InRelease.hidden"
 # Prove the detached-signature fallback works before testing its corruption.
+sudo mkdir -p "$test_root/apt-lists-fallback/partial"
 sudo apt-get update -o Dir::Etc::sourcelist="$apt_source" -o Dir::Etc::sourceparts="-" \
   -o Dir::State::lists="$test_root/apt-lists-fallback" -o APT::Update::Error-Mode=any
 cp "$test_root/site/apt/dists/stable/Release.gpg" "$test_root/Release.gpg.good"
@@ -176,6 +177,8 @@ cp "$test_root/wawrzdev.db.good" "$database"
 corrupt_file "$database_signature"
 expect_pacman_sync_failure database-signature
 cp "$test_root/wawrzdev.db.sig.good" "$database_signature"
+# Restore a valid local database before the package tamper test.
+sudo pacman --config "$test_root/pacman.conf" --root "$test_root/pacman-root" --dbpath "$test_root/pacman-db" --noconfirm -Sy
 
 package_signature="$test_root/site/pacman/x86_64/secret_1.2.3_linux_amd64.pkg.tar.zst.sig"
 cp "$package_signature" "$test_root/package.sig.good"
