@@ -16,15 +16,20 @@ publisher = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
 sys.modules[SPEC.name] = publisher
 SPEC.loader.exec_module(publisher)
+SITE_SPEC = importlib.util.spec_from_file_location("validate_site", Path(__file__).parents[1] / "scripts" / "validate_site.py")
+validate_site = importlib.util.module_from_spec(SITE_SPEC)
+assert SITE_SPEC.loader
+SITE_SPEC.loader.exec_module(validate_site)
 
 
-def tar_bytes(files: dict[str, bytes], mode: str = "w:gz") -> bytes:
+def tar_bytes(files: dict[str, bytes], mode: str = "w:gz", modes: dict[str, int] | None = None) -> bytes:
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode=mode) as archive:
         for name, data in files.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
             info.mtime = 0
+            info.mode = (modes or {}).get(name, 0o644)
             archive.addfile(info, io.BytesIO(data))
     return stream.getvalue()
 
@@ -34,14 +39,38 @@ def ar_member(name: str, data: bytes) -> bytes:
     return header + data + (b"\n" if len(data) % 2 else b"")
 
 
+def fake_binary(os_name: str, arch: str) -> bytes:
+    if os_name == "linux":
+        result = bytearray(64)
+        result[:6] = b"\x7fELF\x02\x01"
+        result[18:20] = (62 if arch == "amd64" else 183).to_bytes(2, "little")
+        return bytes(result)
+    return b"\xcf\xfa\xed\xfe" + (0x01000007 if arch == "amd64" else 0x0100000C).to_bytes(4, "little") + bytes(56)
+
+
 def deb_bytes(app: str, version: str, arch: str) -> bytes:
-    control = f"Package: {app}\nVersion: {version}\nArchitecture: {arch}\nMaintainer: Test <test@example.com>\nDescription: test package\n".encode()
-    return b"!<arch>\n" + ar_member("debian-binary", b"2.0\n") + ar_member("control.tar.gz", tar_bytes({"./control": control})) + ar_member("data.tar.gz", tar_bytes({"./usr/bin/" + app: b"bin"}))
+    deps = {"secret": "", "snip": "Depends: git, fzf, gh\n", "wtf": "Depends: fzf\n"}[app]
+    control = f"Package: {app}\nVersion: {version}\nArchitecture: {arch}\nMaintainer: Test <test@example.com>\n{deps}Description: test package\n".encode()
+    binary = "./usr/bin/" + app
+    data = {binary: fake_binary("linux", arch)}
+    data.update({"./usr/share/bash-completion/completions/" + app: b"bash",
+                 "./usr/share/zsh/site-functions/_" + app: b"zsh",
+                 "./usr/share/fish/vendor_completions.d/" + app + ".fish": b"fish"})
+    return b"!<arch>\n" + ar_member("debian-binary", b"2.0\n") + ar_member("control.tar.gz", tar_bytes({"./control": control})) + ar_member("data.tar.gz", tar_bytes(data, modes={binary: 0o755}))
 
 
 def pkg_bytes(app: str, version: str, arch: str) -> bytes:
-    info = f"pkgname = {app}\npkgver = {version}-1\narch = {arch}\npkgdesc = test package\nlicense = MIT\n".encode()
-    return tar_bytes({".PKGINFO": info, "usr/bin/" + app: b"bin"}, "w:")
+    depends = {"secret": "", "snip": "depend = git\ndepend = fzf\ndepend = github-cli\n", "wtf": "depend = fzf\n"}[app]
+    info = (f"pkgname = {app}\npkgver = {version}-1\narch = {arch}\npkgdesc = test package\n"
+            f"url = https://github.com/wawrzdev/{app}\nbuilddate = 1700000000\npackager = Test <test@example.com>\n"
+            f"size = 64\nlicense = MIT\n{depends}").encode()
+    binary = "usr/bin/" + app
+    goarch = "amd64" if arch == "x86_64" else "arm64"
+    files = {".PKGINFO": info, binary: fake_binary("linux", goarch),
+             "usr/share/bash-completion/completions/" + app: b"bash",
+             "usr/share/zsh/site-functions/_" + app: b"zsh",
+             "usr/share/fish/vendor_completions.d/" + app + ".fish": b"fish"}
+    return tar_bytes(files, "w:", {binary: 0o755})
 
 
 def release_fixture(root: Path, app: str = "secret", version: str = "1.2.3"):
@@ -50,7 +79,10 @@ def release_fixture(root: Path, app: str = "secret", version: str = "1.2.3"):
     for os_name, arch in publisher.ARCHIVE_PLATFORMS:
         name = f"{app}_{version}_{os_name}_{arch}.tar.gz"
         path = root / name
-        path.write_bytes(tar_bytes({app: b"binary", f"completions/{app}.bash": b"complete"}))
+        completion_names = publisher.COMPLETIONS[app]
+        archive_files = {app: fake_binary(os_name, arch)}
+        archive_files.update({f"completions/{name}": b"complete" for name in completion_names})
+        path.write_bytes(tar_bytes(archive_files, modes={app: 0o755}))
         assets[f"archive:{os_name}:{arch}"] = path
         checksums[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     for arch in publisher.LINUX_ARCHES:
@@ -89,17 +121,24 @@ class PublisherTests(unittest.TestCase):
                         return {"object": {"type": "commit", "sha": "a" * 40}}
                     raise AssertionError(path)
 
-                def asset(self, repo, asset_id):
+                def asset(self, repo, asset_id, limit=publisher.MAX_ASSET_SIZE):
                     self.assert_repo = repo
                     return blobs[asset_id]
 
             payload = {"release_id": "42", "tag_name": "v1.2.3", "source_commit": "a" * 40,
                        "checksums_asset_id": "99", "source_repository": "wawrzdev/secret"}
-            verified = publisher.verify_release(FakeGitHub(), "secret", "wawrzdev/secret", payload, root / "stage")
+            verified = publisher.verify_release(FakeGitHub(), "secret", "wawrzdev/secret", payload, root / "stage", lambda *_: None)
             self.assertEqual("1.2.3", verified.version)
             assets.append({"id": 100, "name": "surprise", "state": "uploaded", "size": 1, "digest": "sha256:" + "0" * 64})
             with self.assertRaisesRegex(publisher.PublishError, "unexpected assets"):
-                publisher.verify_release(FakeGitHub(), "secret", "wawrzdev/secret", payload, root / "other")
+                publisher.verify_release(FakeGitHub(), "secret", "wawrzdev/secret", payload, root / "other", lambda *_: None)
+
+            def fail_verification(*_):
+                raise publisher.PublishError("attestation failed")
+
+            assets.pop()
+            with self.assertRaisesRegex(publisher.PublishError, "attestation failed"):
+                publisher.verify_release(FakeGitHub(), "secret", "wawrzdev/secret", payload, root / "failed", fail_verification)
 
     def test_event_allowlist_rejects_spoofed_repository(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -120,7 +159,12 @@ class PublisherTests(unittest.TestCase):
             path = Path(tmp) / "bad.tar.gz"
             path.write_bytes(tar_bytes({"../secret": b"bad", "completions/secret.bash": b"x"}))
             with self.assertRaisesRegex(publisher.PublishError, "unsafe archive"):
-                publisher.validate_archive_contents("secret", path)
+                publisher.validate_archive_contents("secret", "linux", "amd64", path)
+            path.write_bytes(tar_bytes({"secret": fake_binary("linux", "amd64"),
+                                        "completions/secret.bash": b"x", "completions/_secret": b"x",
+                                        "completions/secret.fish": b"x"}))
+            with self.assertRaisesRegex(publisher.PublishError, "not executable"):
+                publisher.validate_archive_contents("secret", "linux", "amd64", path)
 
     def test_debian_package_rejects_data_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,7 +184,7 @@ class PublisherTests(unittest.TestCase):
             release = release_fixture(fixture)
             output = root / "output"
             formula = root / "Formula" / "secret.rb"
-            publisher.publish([release], output)
+            publisher.publish([release], output, 0)
             formula.parent.mkdir(parents=True)
             formula.write_text(publisher.formula_text(release))
             text = formula.read_text()
@@ -149,8 +193,7 @@ class PublisherTests(unittest.TestCase):
             packages = (output / "apt/dists/stable/main/binary-amd64/Packages").read_text()
             self.assertIn("Package: secret", packages)
             self.assertIn("SHA256:", (output / "apt/dists/stable/Release").read_text())
-            with tarfile.open(output / "pacman/x86_64/wawrzdev.db.tar.gz", "r:gz") as database:
-                self.assertIn("secret-1.2.3-1/desc", database.getnames())
+            self.assertTrue((output / "pacman/x86_64/secret_1.2.3_linux_amd64.pkg.tar.zst").is_file())
             manifest, changed = publisher.update_manifest({"schema": 1, "apps": {}}, release)
             self.assertTrue(changed)
             same, changed = publisher.update_manifest(manifest, release)
@@ -167,6 +210,59 @@ class PublisherTests(unittest.TestCase):
             conflict = publisher.VerifiedRelease(**{**release.__dict__, "release_id": 43})
             with self.assertRaisesRegex(publisher.PublishError, "conflicting"):
                 publisher.update_manifest(manifest, conflict)
+            older_root = root / "older"
+            older_root.mkdir()
+            older = release_fixture(older_root, version="1.2.2")
+            with self.assertRaisesRegex(publisher.PublishError, "downgrade"):
+                publisher.update_manifest(manifest, older)
+
+    def test_annotated_tag_is_peeled_to_commit(self):
+        class AnnotatedTag:
+            def json(self, path):
+                if "/git/ref/tags/" in path:
+                    return {"object": {"type": "tag", "sha": "b" * 40}}
+                if "/git/tags/" in path:
+                    return {"object": {"type": "commit", "sha": "a" * 40}}
+                raise AssertionError(path)
+
+        self.assertEqual(("a" * 40, "b" * 40), publisher.peel_tag(AnnotatedTag(), "wawrzdev/secret", "v1.2.3"))
+
+    def test_queued_events_reload_latest_manifest_and_retain_previous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_root, second_root = root / "first", root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            first = release_fixture(first_root, version="1.2.3")
+            second = release_fixture(second_root, version="1.2.4")
+            second = publisher.VerifiedRelease(**{**second.__dict__, "release_id": 43, "source_sha": "b" * 40})
+            original = {"schema": 1, "apps": {}}
+            committed, _ = publisher.update_manifest(json.loads(json.dumps(original)), first)
+            # A second event created at the original SHA must load committed, not original.
+            final, _ = publisher.update_manifest(json.loads(json.dumps(committed)), second)
+            self.assertEqual(["1.2.4", "1.2.3"], [item["version"] for item in final["apps"]["secret"]])
+
+    def test_empty_manifest_bootstrap_builds_repository_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "site"
+            publisher.publish([], output, 0)
+            self.assertTrue((output / "apt/dists/stable/Release").is_file())
+            self.assertTrue((output / "pacman/x86_64").is_dir())
+            self.assertTrue((output / "pacman/aarch64").is_dir())
+
+    def test_complete_reconstruction_retains_two_versions_for_every_app(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            releases = []
+            for app in ("secret", "snip", "wtf"):
+                for version in ("1.2.4", "1.2.3"):
+                    source = root / app / version
+                    source.mkdir(parents=True)
+                    releases.append(release_fixture(source, app, version))
+            output = root / "site"
+            publisher.publish(releases, output, 0)
+            self.assertEqual(12, len(list((output / "apt/pool").rglob("*.deb"))))
+            self.assertEqual(12, len(list((output / "pacman").rglob("*.pkg.tar.zst"))))
 
     def test_manifest_rejects_unknown_app_and_excess_history(self):
         with self.assertRaisesRegex(publisher.PublishError, "unknown application"):
@@ -174,6 +270,13 @@ class PublisherTests(unittest.TestCase):
         record = {"version": "1.2.3"}
         with self.assertRaisesRegex(publisher.PublishError, "at most two"):
             publisher.validate_manifest({"schema": 1, "apps": {"secret": [record, record, record]}})
+
+    def test_pages_allowlist_rejects_unknown_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "index.html").write_text("unexpected")
+            with self.assertRaisesRegex(ValueError, "unexpected Pages file"):
+                validate_site.validate(root)
 
     def test_all_formulae_install_dependencies_and_completions(self):
         with tempfile.TemporaryDirectory() as tmp:

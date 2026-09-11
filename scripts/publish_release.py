@@ -8,6 +8,7 @@ tag, asset-name, and digest data is fetched again from GitHub before output chan
 from __future__ import annotations
 
 import argparse
+import datetime
 import gzip
 import hashlib
 import io
@@ -18,10 +19,12 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 APPS = {
     "secret-release-published": ("secret", "wawrzdev/secret"),
@@ -32,6 +35,18 @@ ARCHIVE_PLATFORMS = (("darwin", "amd64"), ("darwin", "arm64"), ("linux", "amd64"
 LINUX_ARCHES = ("amd64", "arm64")
 TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 ASSET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
+MAX_ASSET_SIZE = 100 * 1024 * 1024
+MAX_RELEASE_SIZE = 800 * 1024 * 1024
+MAX_ARCHIVE_CONTENT = 256 * 1024 * 1024
+COMPLETIONS = {
+    "secret": {"secret.bash", "_secret", "secret.fish"},
+    "snip": {"snip.bash", "_snip", "snip.fish"},
+    "wtf": {"wtf.bash", "wtf.zsh", "wtf.fish"},
+}
+DEPENDENCIES = {
+    "deb": {"secret": set(), "snip": {"git", "fzf", "gh"}, "wtf": {"fzf"}},
+    "pacman": {"secret": set(), "snip": {"git", "fzf", "github-cli"}, "wtf": {"fzf"}},
+}
 
 
 class PublishError(RuntimeError):
@@ -57,7 +72,7 @@ class GitHub:
         self.token = token
         self.api_url = api_url.rstrip("/")
 
-    def _request(self, path: str, accept: str = "application/vnd.github+json") -> bytes:
+    def _request(self, path: str, accept: str = "application/vnd.github+json", limit: int = 2 * 1024 * 1024) -> bytes:
         req = urllib.request.Request(
             self.api_url + path,
             headers={
@@ -69,13 +84,16 @@ class GitHub:
         )
         opener = urllib.request.build_opener(StripCrossHostAuthRedirect())
         with opener.open(req, timeout=60) as response:
-            return response.read()
+            data = response.read(limit + 1)
+            if len(data) > limit:
+                raise PublishError(f"GitHub response exceeds {limit} bytes")
+            return data
 
     def json(self, path: str) -> dict:
         return json.loads(self._request(path))
 
-    def asset(self, repo: str, asset_id: int) -> bytes:
-        return self._request(f"/repos/{repo}/releases/assets/{asset_id}", "application/octet-stream")
+    def asset(self, repo: str, asset_id: int, limit: int = MAX_ASSET_SIZE) -> bytes:
+        return self._request(f"/repos/{repo}/releases/assets/{asset_id}", "application/octet-stream", limit)
 
 
 def require_string(obj: dict, key: str) -> str:
@@ -152,25 +170,61 @@ def expected_assets(app: str, version: str, names: list[str]) -> dict[str, str]:
     return expected
 
 
-def safe_archive_members(path: Path) -> set[str]:
+def safe_archive_members(path: Path) -> dict[str, tarfile.TarInfo]:
     with tarfile.open(path, "r:gz") as archive:
         members = archive.getmembers()
+        total = 0
         for member in members:
             pure = PurePosixPath(member.name)
             if pure.is_absolute() or ".." in pure.parts or member.issym() or member.islnk():
                 raise PublishError(f"unsafe archive member in {path.name}: {member.name}")
-        return {m.name.removeprefix("./") for m in members if m.isfile()}
+            if member.size > MAX_ASSET_SIZE:
+                raise PublishError(f"oversized archive member in {path.name}: {member.name}")
+            total += member.size
+        if total > MAX_ARCHIVE_CONTENT:
+            raise PublishError(f"uncompressed archive is too large: {path.name}")
+        return {m.name.removeprefix("./"): m for m in members if m.isfile()}
 
 
-def validate_archive_contents(app: str, path: Path) -> None:
+def validate_binary(data: bytes, os_name: str, arch: str) -> None:
+    if os_name == "linux":
+        if len(data) < 20 or data[:4] != b"\x7fELF" or data[4:6] != b"\x02\x01":
+            raise PublishError("binary is not a little-endian ELF64 executable")
+        machine = int.from_bytes(data[18:20], "little")
+        expected = 62 if arch == "amd64" else 183
+    else:
+        if len(data) < 8 or data[:4] != b"\xcf\xfa\xed\xfe":
+            raise PublishError("binary is not a little-endian Mach-O 64 executable")
+        machine = int.from_bytes(data[4:8], "little")
+        expected = 0x01000007 if arch == "amd64" else 0x0100000C
+    if machine != expected:
+        raise PublishError(f"binary architecture does not match {os_name}/{arch}")
+
+
+def validate_archive_contents(app: str, os_name: str, arch: str, path: Path) -> None:
     members = safe_archive_members(path)
     if app not in members:
         raise PublishError(f"{path.name} does not contain the {app} binary at archive root")
-    if not any(n.startswith("completions/") for n in members):
-        raise PublishError(f"{path.name} has no completions directory")
+    if not members[app].mode & 0o111:
+        raise PublishError(f"{path.name} binary is not executable")
+    found = {PurePosixPath(name).name for name in members if name.startswith("completions/")}
+    if found != COMPLETIONS[app]:
+        raise PublishError(f"{path.name} has unexpected completion files")
+    with tarfile.open(path, "r:gz") as archive:
+        validate_binary(archive.extractfile(members[app]).read(64), os_name, arch)
 
 
-def verify_release(gh: GitHub, app: str, repo: str, payload: dict, stage: Path) -> VerifiedRelease:
+def verify_github_attestations(repo: str, tag: str, assets: dict[str, Path]) -> None:
+    commands = [["gh", "release", "verify", tag, "--repo", repo]]
+    commands.extend(["gh", "release", "verify-asset", tag, str(path), "--repo", repo] for path in assets.values())
+    for command in commands:
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        if result.returncode:
+            raise PublishError(f"GitHub immutable release verification failed: {result.stderr.strip()}")
+
+
+def verify_release(gh: GitHub, app: str, repo: str, payload: dict, stage: Path,
+                   verifier: Callable[[str, str, dict[str, Path]], None] = verify_github_attestations) -> VerifiedRelease:
     release_id_text = require_string(payload, "release_id")
     if not release_id_text.isdigit():
         raise PublishError("release_id must be decimal")
@@ -198,18 +252,22 @@ def verify_release(gh: GitHub, app: str, repo: str, payload: dict, stage: Path) 
         raise PublishError("release assets are missing")
     by_name: dict[str, dict] = {}
     by_id: dict[int, dict] = {}
+    total_asset_size = 0
     for asset in api_assets:
         name = asset.get("name")
         asset_id = asset.get("id")
         digest = asset.get("digest")
         if (not isinstance(name, str) or not ASSET_RE.fullmatch(name) or not isinstance(asset_id, int)
-                or asset.get("state") != "uploaded" or not isinstance(asset.get("size"), int) or asset["size"] <= 0
+                or asset.get("state") != "uploaded" or not isinstance(asset.get("size"), int) or not 0 < asset["size"] <= MAX_ASSET_SIZE
                 or not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)):
             raise PublishError("release contains an invalid asset name or ID")
         if name in by_name or asset_id in by_id:
             raise PublishError("release contains duplicate asset names or IDs")
         by_name[name] = asset
         by_id[asset_id] = asset
+        total_asset_size += asset["size"]
+    if total_asset_size > MAX_RELEASE_SIZE:
+        raise PublishError("release assets exceed the aggregate size limit")
 
     checksum_id_text = require_string(payload, "checksums_asset_id")
     if not checksum_id_text.isdigit() or int(checksum_id_text) not in by_id:
@@ -217,7 +275,7 @@ def verify_release(gh: GitHub, app: str, repo: str, payload: dict, stage: Path) 
     checksum_asset = by_id[int(checksum_id_text)]
     if checksum_asset["name"] != "checksums.txt":
         raise PublishError("checksums_asset_id does not identify checksums.txt")
-    checksum_bytes = gh.asset(repo, checksum_asset["id"])
+    checksum_bytes = gh.asset(repo, checksum_asset["id"], 1024 * 1024)
     if len(checksum_bytes) != checksum_asset["size"]:
         raise PublishError("checksums.txt size does not match GitHub metadata")
     checksum_digest = hashlib.sha256(checksum_bytes).hexdigest()
@@ -234,11 +292,13 @@ def verify_release(gh: GitHub, app: str, repo: str, payload: dict, stage: Path) 
         raise PublishError("checksums.txt contains missing or unexpected entries")
     downloaded: dict[str, Path] = {}
     stage.mkdir(parents=True, exist_ok=True)
+    checksum_path = stage / "checksums.txt"
+    checksum_path.write_bytes(checksum_bytes)
     for logical, name in required.items():
         if name not in checksums:
             raise PublishError(f"checksums.txt omits {name}")
         asset = by_name[name]
-        data = gh.asset(repo, asset["id"])
+        data = gh.asset(repo, asset["id"], asset["size"])
         if len(data) != asset["size"]:
             raise PublishError(f"asset size mismatch for {name}")
         digest = hashlib.sha256(data).hexdigest()
@@ -250,7 +310,8 @@ def verify_release(gh: GitHub, app: str, repo: str, payload: dict, stage: Path) 
         output.write_bytes(data)
         downloaded[logical] = output
     for os_name, arch in ARCHIVE_PLATFORMS:
-        validate_archive_contents(app, downloaded[f"archive:{os_name}:{arch}"])
+        validate_archive_contents(app, os_name, arch, downloaded[f"archive:{os_name}:{arch}"])
+    verifier(repo, tag, {**downloaded, "checksums": checksum_path})
     records = {logical: {"id": by_name[name]["id"], "name": name, "digest": by_name[name]["digest"]} for logical, name in required.items()}
     return VerifiedRelease(app, repo, tag, version, release_id, commit_sha, downloaded, checksums, records, checksum_asset["id"])
 
@@ -313,7 +374,7 @@ def verify_record(gh: GitHub, app: str, record: dict, stage: Path) -> VerifiedRe
     return verified
 
 
-def formula_text(release: VerifiedRelease) -> str:
+def formula_text(release: VerifiedRelease, url_root: str | None = None) -> str:
     app = release.app
     descriptions = {
         "secret": "Generate and store private machine-local credentials",
@@ -328,33 +389,33 @@ def formula_text(release: VerifiedRelease) -> str:
     }[app]
     dependencies = {
         "secret": "",
-        "snip": '\n  depends_on "git"\n  depends_on "fzf"\n  depends_on "gh"\n',
-        "wtf": '\n  depends_on "fzf"\n',
+        "snip": '\n  depends_on "git"\n  depends_on "fzf"\n  depends_on "gh"\n\n',
+        "wtf": '\n  depends_on "fzf"\n\n',
     }[app]
     class_name = "".join(part.capitalize() for part in app.split("-"))
+    release_url = url_root or f"https://github.com/{release.repo}/releases/download/{release.tag}"
     return f'''class {class_name} < Formula
   desc "{descriptions[app]}"
   homepage "https://github.com/{release.repo}"
   version "{release.version}"
   license "MIT"
 {dependencies}
-
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/{release.repo}/releases/download/{release.tag}/{app}_{release.version}_darwin_arm64.tar.gz"
+      url "{release_url}/{app}_{release.version}_darwin_arm64.tar.gz"
       sha256 "{checks[("darwin", "arm64")]}"
     else
-      url "https://github.com/{release.repo}/releases/download/{release.tag}/{app}_{release.version}_darwin_amd64.tar.gz"
+      url "{release_url}/{app}_{release.version}_darwin_amd64.tar.gz"
       sha256 "{checks[("darwin", "amd64")]}"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/{release.repo}/releases/download/{release.tag}/{app}_{release.version}_linux_arm64.tar.gz"
+      url "{release_url}/{app}_{release.version}_linux_arm64.tar.gz"
       sha256 "{checks[("linux", "arm64")]}"
     else
-      url "https://github.com/{release.repo}/releases/download/{release.tag}/{app}_{release.version}_linux_amd64.tar.gz"
+      url "{release_url}/{app}_{release.version}_linux_amd64.tar.gz"
       sha256 "{checks[("linux", "amd64")]}"
     end
   end
@@ -436,14 +497,61 @@ def decompressed_tar_bytes(data: bytes, label: str) -> bytes:
 
 
 def validate_tar_bytes(data: bytes, label: str) -> None:
+    tar_entries(data, label)
+
+
+def tar_entries(data: bytes, label: str) -> dict[str, tuple[tarfile.TarInfo, bytes]]:
+    entries = {}
+    total = 0
     try:
         with tarfile.open(fileobj=io.BytesIO(decompressed_tar_bytes(data, label)), mode="r:*") as archive:
             for member in archive.getmembers():
                 pure = PurePosixPath(member.name)
                 if pure.is_absolute() or ".." in pure.parts or member.issym() or member.islnk():
                     raise PublishError(f"unsafe member in {label}: {member.name}")
+                total += member.size
+                if member.size > MAX_ASSET_SIZE or total > MAX_ARCHIVE_CONTENT:
+                    raise PublishError(f"uncompressed {label} is too large")
+                if member.isfile():
+                    entries[member.name.removeprefix("./")] = (member, archive.extractfile(member).read())
     except tarfile.TarError as exc:
         raise PublishError(f"invalid {label}") from exc
+    return entries
+
+
+def validate_deb_package(path: Path, app: str, arch: str, fields: dict[str, str]) -> None:
+    entries = tar_entries(read_ar_member(path, "data.tar"), "Debian data archive")
+    binary_path = f"usr/bin/{app}"
+    if binary_path not in entries or not entries[binary_path][0].mode & 0o111:
+        raise PublishError(f"{path.name} lacks an executable {binary_path}")
+    validate_binary(entries[binary_path][1][:64], "linux", arch)
+    expected = {
+        f"usr/share/bash-completion/completions/{app}",
+        f"usr/share/zsh/site-functions/_{app}",
+        f"usr/share/fish/vendor_completions.d/{app}.fish",
+    }
+    found = {name for name in entries if name.startswith(("usr/share/bash-completion/", "usr/share/zsh/", "usr/share/fish/"))}
+    if found != expected:
+        raise PublishError(f"{path.name} has unexpected completion paths")
+    dependencies = {part.strip().split()[0] for part in fields.get("Depends", "").split(",") if part.strip()}
+    if dependencies != DEPENDENCIES["deb"][app]:
+        raise PublishError(f"{path.name} has unexpected dependencies")
+
+
+def validate_arch_package(path: Path, app: str, goarch: str, fields: dict[str, list[str]]) -> None:
+    entries = tar_entries(path.read_bytes(), "Arch package")
+    binary_path = f"usr/bin/{app}"
+    if binary_path not in entries or not entries[binary_path][0].mode & 0o111:
+        raise PublishError(f"{path.name} lacks an executable {binary_path}")
+    validate_binary(entries[binary_path][1][:64], "linux", goarch)
+    expected = {
+        f"usr/share/bash-completion/completions/{app}",
+        f"usr/share/zsh/site-functions/_{app}",
+        f"usr/share/fish/vendor_completions.d/{app}.fish",
+    }
+    found = {name for name in entries if name.startswith(("usr/share/bash-completion/", "usr/share/zsh/", "usr/share/fish/"))}
+    if found != expected or set(fields.get("depend", [])) != DEPENDENCIES["pacman"][app]:
+        raise PublishError(f"{path.name} has unexpected completions or dependencies")
 
 
 def pkginfo(path: Path) -> dict[str, list[str]]:
@@ -497,7 +605,7 @@ def atomic_write(path: Path, data: bytes) -> None:
     temp.replace(path)
 
 
-def render_apt(site: Path) -> None:
+def render_apt(site: Path, timestamp: int) -> None:
     pool = site / "apt" / "pool" / "main"
     records: dict[str, list[str]] = {"amd64": [], "arm64": []}
     for package in sorted(pool.glob("*/*/*.deb")):
@@ -525,10 +633,12 @@ def render_apt(site: Path) -> None:
         for path in (directory / "Packages", directory / "Packages.gz"):
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             atomic_write(directory / "by-hash" / "SHA256" / digest, path.read_bytes())
+    published = datetime.datetime.fromtimestamp(timestamp, datetime.UTC)
+    expires = published + datetime.timedelta(days=7)
     release_lines = [
         "Origin: wawrzdev", "Label: wawrzdev packages", "Suite: stable", "Codename: stable",
         "Architectures: amd64 arm64", "Components: main", "Acquire-By-Hash: yes", "Description: wawrzdev command-line packages",
-        "Date: Thu, 01 Jan 1970 00:00:00 +0000", "SHA256:",
+        f"Date: {email_date(published)}", f"Valid-Until: {email_date(expires)}", "SHA256:",
     ]
     dist = site / "apt" / "dists" / "stable"
     for path in sorted(path for path in dist.glob("main/binary-*/*") if path.is_file()):
@@ -537,63 +647,23 @@ def render_apt(site: Path) -> None:
     atomic_write(dist / "Release", ("\n".join(release_lines) + "\n").encode())
 
 
-def pacman_desc(fields: dict[str, list[str]], filename: str, size: int, digest: str, signature: str = "") -> bytes:
-    mapping = (("FILENAME", [filename]), ("NAME", fields["pkgname"]), ("VERSION", fields["pkgver"]),
-               ("DESC", fields["pkgdesc"]), ("CSIZE", [str(size)]), ("SHA256SUM", [digest]),
-               ("PGPSIG", [signature] if signature else []), ("URL", fields.get("url", [])),
-               ("BUILDDATE", fields.get("builddate", [])), ("PACKAGER", fields.get("packager", [])),
-               ("ISIZE", fields.get("size", [])), ("ARCH", fields["arch"]),
-               ("LICENSE", fields.get("license", [])), ("DEPENDS", fields.get("depend", [])))
-    parts = []
-    for key, values in mapping:
-        if values:
-            parts.append(f"%{key}%\n" + "\n".join(values) + "\n")
-    return ("\n".join(parts) + "\n").encode()
+def email_date(value: datetime.datetime) -> str:
+    return value.strftime("%a, %d %b %Y %H:%M:%S +0000")
 
 
-def deterministic_tar_gz(entries: list[tuple[str, bytes]]) -> bytes:
-    raw = io.BytesIO()
-    with tarfile.open(fileobj=raw, mode="w") as archive:
-        for name, data in sorted(entries):
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            info.mtime = 0
-            info.mode = 0o644
-            info.uid = info.gid = 0
-            info.uname = info.gname = "root"
-            archive.addfile(info, io.BytesIO(data))
-    output = io.BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as gz:
-        gz.write(raw.getvalue())
-    return output.getvalue()
-
-
-def render_pacman(site: Path) -> None:
-    for repo_arch, package_arch in (("x86_64", "x86_64"), ("aarch64", "aarch64")):
-        directory = site / "pacman" / repo_arch
-        entries: list[tuple[str, bytes]] = []
-        for package in sorted(directory.glob("*.pkg.tar.zst")):
-            fields = pkginfo(package)
-            if fields["arch"] != [package_arch]:
-                raise PublishError(f"{package.name} has unexpected Arch architecture")
-            digest = hashlib.sha256(package.read_bytes()).hexdigest()
-            stem = f"{fields['pkgname'][0]}-{fields['pkgver'][0]}"
-            entries.append((f"{stem}/desc", pacman_desc(fields, package.name, package.stat().st_size, digest)))
-        db = deterministic_tar_gz(entries)
-        atomic_write(directory / "wawrzdev.db.tar.gz", db)
-        atomic_write(directory / "wawrzdev.files.tar.gz", db)
-
-
-def publish(releases: list[VerifiedRelease], output: Path) -> None:
+def publish(releases: list[VerifiedRelease], output: Path, timestamp: int | None = None) -> None:
     if output.exists():
         shutil.rmtree(output)
     output.mkdir(parents=True)
+    (output / "pacman" / "x86_64").mkdir(parents=True)
+    (output / "pacman" / "aarch64").mkdir(parents=True)
     for release in releases:
         for arch in LINUX_ARCHES:
             deb = release.assets[f"deb:{arch}"]
             deb_fields = deb_control(deb)
             if deb_fields["Package"] != release.app or deb_fields["Version"].lstrip("v") != release.version or deb_fields["Architecture"] != arch:
                 raise PublishError(f"unexpected Debian metadata in {deb.name}")
+            validate_deb_package(deb, release.app, arch, deb_fields)
             target = output / "apt" / "pool" / "main" / release.app[0] / release.app / deb.name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(deb, target)
@@ -604,11 +674,11 @@ def publish(releases: list[VerifiedRelease], output: Path) -> None:
                     or fields["pkgver"][0].lstrip("v") not in (release.version, release.version + "-1")
                     or fields["arch"] != [expected_arch]):
                 raise PublishError(f"unexpected Arch metadata in {package.name}")
+            validate_arch_package(package, release.app, arch, fields)
             destination = output / "pacman" / expected_arch / package.name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(package, destination)
-    render_apt(output)
-    render_pacman(output)
+    render_apt(output, int(time.time()) if timestamp is None else timestamp)
 
 
 def main() -> int:

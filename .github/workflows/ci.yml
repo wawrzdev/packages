@@ -23,6 +23,17 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -v
           python3 -m py_compile scripts/*.py
+      - name: Exercise no-release bootstrap flow
+        run: |
+          mkdir -p /tmp/packages-bootstrap
+          GH_TOKEN=unused python3 scripts/publish_release.py \
+            --manifest manifests/releases.json \
+            --manifest-output /tmp/packages-bootstrap/releases.json \
+            --output /tmp/packages-bootstrap/site \
+            --formula-output /tmp/packages-bootstrap/formula.rb
+          test -f /tmp/packages-bootstrap/site/apt/dists/stable/Release
+          test -d /tmp/packages-bootstrap/site/pacman/x86_64
+          test ! -e /tmp/packages-bootstrap/formula.rb
       - name: Validate shell scripts
         run: |
           bash -n scripts/*.sh
@@ -34,3 +45,28 @@ jobs:
           done
       - name: Validate workflow syntax
         run: /tmp/actionlint
+      - name: End-to-end signed APT and Pacman repositories
+        run: |
+          sudo add-apt-repository --yes universe
+          sudo apt-get update
+          sudo apt-get install --yes gnupg pacman-package-manager zstd
+          bash tests/integration-packages.sh
+
+  homebrew-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 tests/render-homebrew-fixture.py /tmp/homebrew-fixture
+      - run: brew style /tmp/homebrew-fixture/secret.rb
+      - run: brew install --formula /tmp/homebrew-fixture/secret.rb
+      - run: brew test secret
+
+  homebrew-linux:
+    runs-on: ubuntu-latest
+    container: ghcr.io/homebrew/brew:latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 tests/render-homebrew-fixture.py /tmp/homebrew-fixture
+      - run: brew style /tmp/homebrew-fixture/secret.rb
+      - run: brew install --formula /tmp/homebrew-fixture/secret.rb
+      - run: brew test secret
