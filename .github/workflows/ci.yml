@@ -22,7 +22,7 @@ jobs:
       - name: Python unit and integration tests
         run: |
           python3 -m unittest discover -s tests -v
-          python3 -m py_compile scripts/*.py
+          python3 -m py_compile scripts/*.py tests/*.py
       - name: Exercise no-release bootstrap flow
         run: |
           mkdir -p /tmp/packages-bootstrap
@@ -36,8 +36,8 @@ jobs:
           test ! -e /tmp/packages-bootstrap/formula.rb
       - name: Validate shell scripts
         run: |
-          bash -n scripts/*.sh
-          shellcheck scripts/*.sh
+          bash -n scripts/*.sh tests/*.sh
+          shellcheck scripts/*.sh tests/*.sh
       - name: Validate Ruby package definitions
         run: |
           for file in Casks/*.rb Formula/*.rb; do
@@ -57,16 +57,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 tests/render-homebrew-fixture.py /tmp/homebrew-fixture
-      - run: brew style /tmp/homebrew-fixture/secret.rb
-      - run: brew install --formula /tmp/homebrew-fixture/secret.rb
-      - run: brew test secret
+      - run: brew style /tmp/homebrew-fixture/*.rb
+      - run: brew install --formula /tmp/homebrew-fixture/*.rb
+      - run: for formula in secret snip wtf; do brew test "$formula"; done
 
   homebrew-linux:
     runs-on: ubuntu-latest
-    container: ghcr.io/homebrew/brew:latest
+    container: ghcr.io/homebrew/brew@sha256:613f2f524c4d1fb8fe37dbe7a5581392c89e7865bac725bab0d8e24309ae6d7c
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 tests/render-homebrew-fixture.py /tmp/homebrew-fixture
-      - run: brew style /tmp/homebrew-fixture/secret.rb
-      - run: brew install --formula /tmp/homebrew-fixture/secret.rb
-      - run: brew test secret
+      - run: brew style /tmp/homebrew-fixture/*.rb
+      - run: brew install --formula /tmp/homebrew-fixture/*.rb
+      - run: for formula in secret snip wtf; do brew test "$formula"; done

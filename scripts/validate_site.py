@@ -25,7 +25,7 @@ def validate(root: Path) -> None:
             raise ValueError(f"symbolic link is forbidden: {relative}")
         if path.is_dir():
             continue
-        if not path.is_file() or not any(pattern.fullmatch(relative) for pattern in ALLOWED):
+        if not path.is_file() or path.stat().st_nlink != 1 or not any(pattern.fullmatch(relative) for pattern in ALLOWED):
             raise ValueError(f"unexpected Pages file: {relative}")
         total += path.stat().st_size
         if total > MAX_SITE_SIZE:

@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-site=${1:?usage: sign-repositories.sh SITE}
+mode=${1:?usage: sign-repositories.sh packages|metadata SITE}
+site=${2:?usage: sign-repositories.sh packages|metadata SITE}
+if [ "$mode" != packages ] && [ "$mode" != metadata ]; then
+  echo "mode must be packages or metadata" >&2
+  exit 1
+fi
 : "${PACKAGES_GPG_PRIVATE_KEY_B64:?missing PACKAGES_GPG_PRIVATE_KEY_B64}"
 : "${PACKAGES_GPG_PASSPHRASE:?missing PACKAGES_GPG_PASSPHRASE}"
 : "${PACKAGES_GPG_FINGERPRINT:?missing PACKAGES_GPG_FINGERPRINT}"
@@ -62,39 +67,26 @@ verify_exact() {
   fi
 }
 
-release="$site/apt/dists/stable/Release"
-rm -f "$site/apt/dists/stable/InRelease" "$site/apt/dists/stable/Release.gpg"
-printf '%s\n' "$PACKAGES_GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
-  --passphrase-fd 0 --local-user "$PACKAGES_GPG_FINGERPRINT!" --clearsign \
-  --output "$site/apt/dists/stable/InRelease" "$release"
-verify_exact "$site/apt/dists/stable/InRelease"
-sign_detached "$release" "$site/apt/dists/stable/Release.gpg"
+if [ "$mode" = packages ]; then
+  while IFS= read -r -d '' package; do
+    sign_detached "$package" "$package.sig"
+  done < <(find "$site/pacman" -type f -name '*.pkg.tar.zst' -print0 | sort -z)
+else
+  release="$site/apt/dists/stable/Release"
+  rm -f "$site/apt/dists/stable/InRelease" "$site/apt/dists/stable/Release.gpg"
+  printf '%s\n' "$PACKAGES_GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+    --passphrase-fd 0 --local-user "$PACKAGES_GPG_FINGERPRINT!" --clearsign \
+    --output "$site/apt/dists/stable/InRelease" "$release"
+  verify_exact "$site/apt/dists/stable/InRelease"
+  sign_detached "$release" "$site/apt/dists/stable/Release.gpg"
 
-while IFS= read -r -d '' package; do
-  sign_detached "$package" "$package.sig"
-done < <(find "$site/pacman" -type f -name '*.pkg.tar.zst' -print0 | sort -z)
-
-while IFS= read -r -d '' directory; do
-  (
-    cd "$directory"
-    rm -f wawrzdev.db wawrzdev.db.tar.gz wawrzdev.files wawrzdev.files.tar.gz
-    if compgen -G './*.pkg.tar.zst' >/dev/null; then
-      packages=( ./*.pkg.tar.zst )
-      repo-add wawrzdev.db.tar.gz "${packages[@]}"
-    else
-      tar --format=ustar --sort=name --mtime=@0 --owner=0 --group=0 -czf wawrzdev.db.tar.gz --files-from /dev/null
-      cp wawrzdev.db.tar.gz wawrzdev.files.tar.gz
-    fi
-    rm -f wawrzdev.db wawrzdev.files
-  )
-done < <(find "$site/pacman" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
-
-while IFS= read -r -d '' database; do
-  sign_detached "$database" "$database.sig"
-  short=${database%.tar.gz}
-  cp "$database" "$short"
-  cp "$database.sig" "$short.sig"
-done < <(find "$site/pacman" -type f \( -name 'wawrzdev.db.tar.gz' -o -name 'wawrzdev.files.tar.gz' \) -print0 | sort -z)
+  while IFS= read -r -d '' database; do
+    sign_detached "$database" "$database.sig"
+    short=${database%.tar.gz}
+    cp "$database" "$short"
+    cp "$database.sig" "$short.sig"
+  done < <(find "$site/pacman" -type f \( -name 'wawrzdev.db.tar.gz' -o -name 'wawrzdev.files.tar.gz' \) -print0 | sort -z)
+fi
 
 mkdir -p "$site/keys"
 gpg --batch --export > "$site/keys/wawrzdev-packages.gpg"

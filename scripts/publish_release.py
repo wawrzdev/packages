@@ -174,10 +174,14 @@ def safe_archive_members(path: Path) -> dict[str, tarfile.TarInfo]:
     with tarfile.open(path, "r:gz") as archive:
         members = archive.getmembers()
         total = 0
+        seen = set()
         for member in members:
             pure = PurePosixPath(member.name)
-            if pure.is_absolute() or ".." in pure.parts or member.issym() or member.islnk():
+            canonical = member.name.removeprefix("./").rstrip("/")
+            if (pure.is_absolute() or ".." in pure.parts or not canonical or canonical in seen
+                    or not (member.isfile() or member.isdir())):
                 raise PublishError(f"unsafe archive member in {path.name}: {member.name}")
+            seen.add(canonical)
             if member.size > MAX_ASSET_SIZE:
                 raise PublishError(f"oversized archive member in {path.name}: {member.name}")
             total += member.size
@@ -207,9 +211,12 @@ def validate_archive_contents(app: str, os_name: str, arch: str, path: Path) -> 
         raise PublishError(f"{path.name} does not contain the {app} binary at archive root")
     if not members[app].mode & 0o111:
         raise PublishError(f"{path.name} binary is not executable")
-    found = {PurePosixPath(name).name for name in members if name.startswith("completions/")}
-    if found != COMPLETIONS[app]:
+    expected_completions = {f"completions/{name}" for name in COMPLETIONS[app]}
+    found = {name for name in members if name.startswith("completions/")}
+    if found != expected_completions:
         raise PublishError(f"{path.name} has unexpected completion files")
+    if any(not members[name].mode & 0o444 or members[name].mode & 0o111 for name in found):
+        raise PublishError(f"{path.name} has invalid completion modes")
     with tarfile.open(path, "r:gz") as archive:
         validate_binary(archive.extractfile(members[app]).read(64), os_name, arch)
 
@@ -503,12 +510,16 @@ def validate_tar_bytes(data: bytes, label: str) -> None:
 def tar_entries(data: bytes, label: str) -> dict[str, tuple[tarfile.TarInfo, bytes]]:
     entries = {}
     total = 0
+    seen = set()
     try:
         with tarfile.open(fileobj=io.BytesIO(decompressed_tar_bytes(data, label)), mode="r:*") as archive:
             for member in archive.getmembers():
                 pure = PurePosixPath(member.name)
-                if pure.is_absolute() or ".." in pure.parts or member.issym() or member.islnk():
+                canonical = member.name.removeprefix("./").rstrip("/")
+                if (pure.is_absolute() or ".." in pure.parts or not canonical or canonical in seen
+                        or not (member.isfile() or member.isdir())):
                     raise PublishError(f"unsafe member in {label}: {member.name}")
+                seen.add(canonical)
                 total += member.size
                 if member.size > MAX_ASSET_SIZE or total > MAX_ARCHIVE_CONTENT:
                     raise PublishError(f"uncompressed {label} is too large")
@@ -533,6 +544,8 @@ def validate_deb_package(path: Path, app: str, arch: str, fields: dict[str, str]
     found = {name for name in entries if name.startswith(("usr/share/bash-completion/", "usr/share/zsh/", "usr/share/fish/"))}
     if found != expected:
         raise PublishError(f"{path.name} has unexpected completion paths")
+    if any(not entries[name][0].mode & 0o444 or entries[name][0].mode & 0o111 for name in found):
+        raise PublishError(f"{path.name} has invalid completion modes")
     dependencies = {part.strip().split()[0] for part in fields.get("Depends", "").split(",") if part.strip()}
     if dependencies != DEPENDENCIES["deb"][app]:
         raise PublishError(f"{path.name} has unexpected dependencies")
@@ -552,6 +565,8 @@ def validate_arch_package(path: Path, app: str, goarch: str, fields: dict[str, l
     found = {name for name in entries if name.startswith(("usr/share/bash-completion/", "usr/share/zsh/", "usr/share/fish/"))}
     if found != expected or set(fields.get("depend", [])) != DEPENDENCIES["pacman"][app]:
         raise PublishError(f"{path.name} has unexpected completions or dependencies")
+    if any(not entries[name][0].mode & 0o444 or entries[name][0].mode & 0o111 for name in found):
+        raise PublishError(f"{path.name} has invalid completion modes")
 
 
 def pkginfo(path: Path) -> dict[str, list[str]]:

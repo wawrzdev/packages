@@ -64,7 +64,7 @@ Create a dedicated package-signing subkey on an offline machine. Do not reuse a 
 - Secret `PACKAGES_GPG_PASSPHRASE`: the subkey passphrase.
 - Variable `PACKAGES_GPG_FINGERPRINT`: the exact 40-character uppercase fingerprint selected for signing.
 
-The signing job creates a mode-0700 temporary keyring, imports the key from a temporary file, checks the exact fingerprint, supplies the passphrase over standard input, verifies all signatures, exports only the public key into the site, and destroys the keyring.
+Signing uses two isolated protected-environment jobs. The first signs opaque package bytes and exits. A separate job with no private-key environment runs `repo-add` over the packages and detached signatures. The final protected job imports the key into a new mode-0700 keyring and signs only the resulting APT and Pacman metadata. Each signing process checks the exact signing-subkey fingerprint, selects it with GPG’s `FINGERPRINT!` syntax, verifies `VALIDSIG` against that same fingerprint, exports only public certificates, and destroys its temporary keyring.
 
 For rotation, first import the old secret key and new public key in the encoded key bundle, keep the old signing-subkey fingerprint selected, publish the combined public keyring with a manual workflow run, and have clients refresh it. Then replace the bundle with the new secret key plus both public keys, select the new signing-subkey fingerprint, and publish again. Keep the offline old key and the last known-good manifest for recovery. If signing or Pages deployment fails, fix the environment and run the workflow manually; it reconstructs the site from immutable retained releases.
 
