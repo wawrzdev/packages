@@ -230,6 +230,38 @@ class PublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(publisher.PublishError, "unsafe member"):
                 publisher.deb_control(path)
 
+    def test_debian_control_rejects_canonical_aliases_and_special_members(self):
+        control = b"Package: secret\nVersion: 1.2.3\nArchitecture: amd64\nDescription: test\n"
+        data_archive = tar_bytes({"usr/bin/secret": b"binary"})
+        bad_control_archives = []
+
+        duplicate = io.BytesIO()
+        with tarfile.open(fileobj=duplicate, mode="w:gz") as archive:
+            for name in ("control", "././control"):
+                info = tarfile.TarInfo(name)
+                info.size = len(control)
+                archive.addfile(info, io.BytesIO(control))
+        bad_control_archives.append(duplicate.getvalue())
+
+        special = io.BytesIO()
+        with tarfile.open(fileobj=special, mode="w:gz") as archive:
+            info = tarfile.TarInfo("control")
+            info.size = len(control)
+            archive.addfile(info, io.BytesIO(control))
+            fifo = tarfile.TarInfo("control-pipe")
+            fifo.type = tarfile.FIFOTYPE
+            archive.addfile(fifo)
+        bad_control_archives.append(special.getvalue())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, control_archive in enumerate(bad_control_archives):
+                path = Path(tmp) / f"bad-control-{index}.deb"
+                path.write_bytes(b"!<arch>\n" + ar_member("debian-binary", b"2.0\n")
+                                 + ar_member("control.tar.gz", control_archive)
+                                 + ar_member("data.tar.gz", data_archive))
+                with self.assertRaisesRegex(publisher.PublishError, "unsafe member in Debian control archive"):
+                    publisher.deb_control(path)
+
     def test_publish_generates_formula_indexes_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
