@@ -8,11 +8,17 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: packages-main-writes
+  cancel-in-progress: false
+
 jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Bump casks to latest upstream versions
         id: bump
@@ -21,13 +27,17 @@ jobs:
         run: bash scripts/bump-casks.sh
 
       - name: Commit & push if changed
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [ -n "$(git status --porcelain Casks)" ]; then
             git config user.name  "cask-autobump[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add Casks
-            git commit -m "autobump: update cask versions + checksums [skip ci]"
-            git push
+            git commit -m "autobump: update cask versions and checksums"
+            git fetch origin "$DEFAULT_BRANCH"
+            git rebase "origin/$DEFAULT_BRANCH"
+            git push origin "HEAD:$DEFAULT_BRANCH"
           else
             echo "nothing to commit"
           fi
