@@ -17,13 +17,21 @@ Homebrew core also has an unrelated formula named `wtf`. Use the fully qualified
 
 ## Linux repositories
 
-Pages must be enabled with **Source: GitHub Actions**. Replace `FINGERPRINT` below with the fingerprint published during repository setup.
+Repositories are published through GitHub Actions Pages. The primary public certificate fingerprint is
+`CA9E472DA65EAAC61A29DF2C6BC9CD87B018E5C9`. Verify the downloaded certificate against this fingerprint
+before trusting it. The current signing subkey is `3B4493F499C7D2EC0F8965DC410405C255323B8C`, expiring
+September 11, 2027. Clients trust the primary certificate; signature diagnostics identify the signing subkey.
+Authenticate every primary fingerprint in a downloaded keyring, including any additional certificate
+introduced during rotation; do not accept unexpected primary keys merely because the current one is present.
 
 Debian/Ubuntu (`amd64` and `arm64`):
 
 ```sh
 curl -fsSL https://wawrzdev.github.io/packages/keys/wawrzdev-packages.gpg \
-  | sudo tee /usr/share/keyrings/wawrzdev-packages.gpg >/dev/null
+  -o /tmp/wawrzdev-packages.gpg
+gpg --show-keys --with-fingerprint /tmp/wawrzdev-packages.gpg
+# Check the primary fingerprint above before installing the certificate.
+sudo install -m 0644 /tmp/wawrzdev-packages.gpg /usr/share/keyrings/wawrzdev-packages.gpg
 echo "deb [signed-by=/usr/share/keyrings/wawrzdev-packages.gpg] https://wawrzdev.github.io/packages/apt stable main" \
   | sudo tee /etc/apt/sources.list.d/wawrzdev-packages.list
 sudo apt update
@@ -33,9 +41,11 @@ sudo apt install secret snip wtf
 Arch Linux (`x86_64` and `aarch64`):
 
 ```sh
-curl -fsSL https://wawrzdev.github.io/packages/keys/wawrzdev-packages.asc | gpg --show-keys
-curl -fsSL https://wawrzdev.github.io/packages/keys/wawrzdev-packages.asc | sudo pacman-key --add -
-sudo pacman-key --lsign-key FINGERPRINT
+curl -fsSL https://wawrzdev.github.io/packages/keys/wawrzdev-packages.asc -o /tmp/wawrzdev-packages.asc
+gpg --show-keys --with-fingerprint /tmp/wawrzdev-packages.asc
+# Check the primary fingerprint above before importing the certificate.
+sudo pacman-key --add /tmp/wawrzdev-packages.asc
+sudo pacman-key --lsign-key CA9E472DA65EAAC61A29DF2C6BC9CD87B018E5C9
 ```
 
 Then add this section to `/etc/pacman.conf` and run `sudo pacman -Syu`:
@@ -62,7 +72,12 @@ APT publishes `stable/main`, `Packages`/`Packages.gz`, SHA-256 by-hash copies, a
 
 ## Signing bootstrap and recovery
 
-Create a dedicated package-signing subkey on an offline machine. Do not reuse a personal signing key. Export its secret material, base64 encode it without line wrapping, and configure these values in the protected `package-signing` environment:
+Create a dedicated certification primary key and package-signing subkey on a trusted personal machine
+(offline generation is an option). Back up the primary key, passphrase, and revocation certificate in a
+personal recovery vault and verify restoration before removing working recovery copies. Keep the
+primary secret key out of CI. Do not reuse a personal signing key. Export only the signing subkey's
+secret material, base64 encode it without line wrapping, and configure these values in the protected
+`package-signing` environment:
 
 - Secret `PACKAGES_GPG_PRIVATE_KEY_B64`: base64 of the exported secret key.
 - Secret `PACKAGES_GPG_PASSPHRASE`: the subkey passphrase.
@@ -77,7 +92,7 @@ Before activating update automation or the first CLI tag:
 1. Merge these workflows to the default branch. Require PRs, passing `test`, `homebrew-macos`, and `homebrew-linux` checks with up-to-date branches, resolved conversations, and linear history. Require zero external approvals; disallow force pushes and deletion of the default branch. Do not grant the automation App a bypass.
 2. Enable repository auto-merge and allow **rebase merges only**. Configure protections before running update automation: auto-merge can merge immediately if no requirements exist.
 3. Register a dedicated GitHub App installed only on `wawrzdev/packages`, with repository **Contents: read/write** and **Pull requests: read/write**. No Actions, administration, Pages, or signing access is needed. In the `package-updates` environment, restricted to the default branch, set variable `PACKAGES_APP_CLIENT_ID` and secret `PACKAGES_APP_PRIVATE_KEY` (the PEM key). No required environment reviewer is needed for unattended updates.
-4. Enable immutable releases in `secret`, `snip`, and `wtf` and configure their `PACKAGES_DISPATCH_TOKEN` secrets separately.
+4. Enable immutable releases in `secret`, `snip`, and `wtf`. Each producer uses a separate `package-dispatch` environment restricted to `v*` tags, with variable `PACKAGES_APP_CLIENT_ID` and secret `PACKAGES_APP_PRIVATE_KEY`. Its checkout-free notification job mints a short-lived token for `wawrzdev/packages` with Contents write only, after validating the published immutable release. The App installation remains limited to `packages`; a personal dispatch token is not needed.
 5. Protect the `package-signing` environment and configure its secrets and fingerprint variable. Enable Pages with GitHub Actions as its source and protect the `github-pages` environment. Restrict both environments to the default branch.
 6. Run a proposal through required CI and auto-merge, then verify publication and installation on both architectures. The initial no-release bootstrap produces an empty signed repository without inventing package versions.
 
