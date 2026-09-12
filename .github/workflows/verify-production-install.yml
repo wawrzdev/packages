@@ -1,0 +1,188 @@
+name: Verify production package installs
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published secret release to verify
+        required: true
+        default: v0.1.0
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-install-verification
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  PRIMARY_FINGERPRINT: CA9E472DA65EAAC61A29DF2C6BC9CD87B018E5C9
+  SIGNING_FINGERPRINT: 3B4493F499C7D2EC0F8965DC410405C255323B8C
+  REPOSITORY_BASE: https://wawrzdev.github.io/packages
+
+jobs:
+  release-ready:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+              raise SystemExit(f"invalid stable release tag: {tag!r}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"version={tag[1:]}", file=output)
+          PY
+          gh release verify "$RELEASE_TAG" --repo wawrzdev/secret
+          test "$(gh api "repos/wawrzdev/secret/releases/tags/$RELEASE_TAG" --jq '.draft')" = false
+          test "$(gh api "repos/wawrzdev/secret/releases/tags/$RELEASE_TAG" --jq '.prerelease')" = false
+          test "$(gh api "repos/wawrzdev/secret/releases/tags/$RELEASE_TAG" --jq '.immutable')" = true
+
+  homebrew:
+    needs: release-ready
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - if: runner.os == 'Linux'
+        run: echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+      - name: Install and run through the production tap
+        env:
+          EXPECTED_VERSION: ${{ needs.release-ready.outputs.version }}
+        run: |
+          brew tap wawrzdev/packages https://github.com/wawrzdev/packages.git
+          brew install wawrzdev/packages/secret
+          brew test wawrzdev/packages/secret
+          binary="$(brew --prefix wawrzdev/packages/secret)/bin/secret"
+          test -x "$binary"
+          "$binary" --version | grep -F -- "$EXPECTED_VERSION"
+
+  apt-and-pacman:
+    needs: release-ready
+    runs-on: ubuntu-24.04
+    env:
+      EXPECTED_VERSION: ${{ needs.release-ready.outputs.version }}
+    steps:
+      - name: Install clients on the disposable runner
+        run: |
+          sudo add-apt-repository --yes universe
+          sudo apt-get update
+          sudo apt-get install --yes gnupg libarchive-tools pacman-package-manager
+
+      - name: Verify the published trust material and APT signature
+        run: |
+          work="$RUNNER_TEMP/production-packages"
+          mkdir -p "$work/gnupg"
+          chmod 700 "$work/gnupg"
+          curl -fsSLo "$work/key.gpg" "$REPOSITORY_BASE/keys/wawrzdev-packages.gpg"
+          gpg --batch --homedir "$work/gnupg" --show-keys --with-colons --fingerprint "$work/key.gpg" > "$work/key-records"
+          awk -F: -v primary="$PRIMARY_FINGERPRINT" -v signer="$SIGNING_FINGERPRINT" '
+            $1 == "pub" { kind = "pub"; public_keys++ }
+            $1 == "sub" { kind = "sub" }
+            $1 == "fpr" && kind == "pub" { public_fingerprints++; primary_found += ($10 == primary) }
+            $1 == "fpr" && kind == "sub" && $10 == signer { signer_found = 1 }
+            END { exit !(public_keys == 1 && public_fingerprints == 1 && primary_found == 1 && signer_found) }
+          ' "$work/key-records"
+          curl -fsSLo "$work/InRelease" "$REPOSITORY_BASE/apt/dists/stable/InRelease"
+          gpgv --status-fd 1 --keyring "$work/key.gpg" "$work/InRelease" > "$work/apt-status"
+          awk -v signer="$SIGNING_FINGERPRINT" '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && $3 == signer { found = 1 } END { exit !found }' "$work/apt-status"
+
+      - name: Install and run the amd64 APT package; authenticate arm64 retrieval
+        run: |
+          work="$RUNNER_TEMP/production-packages"
+          lists="$work/apt-lists"
+          source="$work/wawrzdev-packages.list"
+          mkdir -p "$work/apt-download"
+          sudo mkdir -p "$lists/partial"
+          sudo chown -R _apt:root "$lists"
+          printf '%s\n' "deb [arch=amd64,arm64 signed-by=$work/key.gpg] $REPOSITORY_BASE/apt stable main" > "$source"
+          sudo dpkg --add-architecture arm64
+          apt_options=(
+            -o "Dir::Etc::sourcelist=$source"
+            -o Dir::Etc::sourceparts=-
+            -o "Dir::State::lists=$lists"
+            -o APT::Get::List-Cleanup=0
+          )
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes secret
+          secret --version | grep -F -- "$EXPECTED_VERSION"
+          (cd "$work/apt-download" && apt-get "${apt_options[@]}" download secret:arm64)
+          arm_deb=$(find "$work/apt-download" -maxdepth 1 -type f -name '*.deb' -print -quit)
+          test -n "$arm_deb"
+          test "$(dpkg-deb --field "$arm_deb" Architecture)" = arm64
+          test "$(dpkg-deb --field "$arm_deb" Version)" = "$EXPECTED_VERSION"
+
+      - name: Install and run the x86_64 Pacman package; authenticate aarch64 retrieval
+        run: |
+          work="$RUNNER_TEMP/production-packages"
+          verify_signer() {
+            local signature=$1
+            local content=$2
+            local status=$3
+            gpgv --status-fd 1 --keyring "$work/key.gpg" "$signature" "$content" > "$status"
+            awk -v signer="$SIGNING_FINGERPRINT" '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && $3 == signer { found = 1 } END { exit !found }' "$status"
+          }
+
+          for arch in x86_64 aarch64; do
+            curl -fsSLo "$work/wawrzdev-$arch.db" "$REPOSITORY_BASE/pacman/$arch/wawrzdev.db"
+            curl -fsSLo "$work/wawrzdev-$arch.db.sig" "$REPOSITORY_BASE/pacman/$arch/wawrzdev.db.sig"
+            verify_signer "$work/wawrzdev-$arch.db.sig" "$work/wawrzdev-$arch.db" "$work/pacman-$arch-db-status"
+          done
+
+          mkdir -p "$work/pacman-gpg"
+          chmod 700 "$work/pacman-gpg"
+          sudo pacman-key --gpgdir "$work/pacman-gpg" --init
+          sudo pacman-key --gpgdir "$work/pacman-gpg" --add "$work/key.gpg"
+          sudo pacman-key --gpgdir "$work/pacman-gpg" --lsign-key "$PRIMARY_FINGERPRINT"
+
+          configure_pacman() {
+            local arch=$1
+            local suffix=$2
+            mkdir -p "$work/pacman-root-$suffix" "$work/pacman-db-$suffix" "$work/pacman-cache-$suffix"
+            cat > "$work/pacman-$suffix.conf" <<EOF
+          [options]
+          Architecture = $arch
+          SigLevel = Required DatabaseRequired
+          LocalFileSigLevel = Required
+          GPGDir = $work/pacman-gpg
+          CacheDir = $work/pacman-cache-$suffix
+          LogFile = $work/pacman-$suffix.log
+
+          [wawrzdev]
+          Server = $REPOSITORY_BASE/pacman/\$arch
+          EOF
+          }
+
+          configure_pacman x86_64 amd64
+          sudo pacman --config "$work/pacman-amd64.conf" --root "$work/pacman-root-amd64" \
+            --dbpath "$work/pacman-db-amd64" --noconfirm -Sy secret
+          "$work/pacman-root-amd64/usr/bin/secret" --version | grep -F -- "$EXPECTED_VERSION"
+          amd64_pkg=$(find "$work/pacman-cache-amd64" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print -quit)
+          test -n "$amd64_pkg"
+          curl -fsSLo "$amd64_pkg.sig" "$REPOSITORY_BASE/pacman/x86_64/$(basename "$amd64_pkg").sig"
+          verify_signer "$amd64_pkg.sig" "$amd64_pkg" "$work/pacman-package-status"
+          sudo pacman --config "$work/pacman-amd64.conf" --root "$work/pacman-root-amd64" \
+            --dbpath "$work/pacman-db-amd64" --noconfirm -Fy
+          sudo pacman --config "$work/pacman-amd64.conf" --root "$work/pacman-root-amd64" \
+            --dbpath "$work/pacman-db-amd64" -F usr/bin/secret | grep -F secret
+
+          configure_pacman aarch64 arm64
+          sudo pacman --config "$work/pacman-arm64.conf" --root "$work/pacman-root-arm64" \
+            --dbpath "$work/pacman-db-arm64" --noconfirm -Sy
+          sudo pacman --config "$work/pacman-arm64.conf" --root "$work/pacman-root-arm64" \
+            --dbpath "$work/pacman-db-arm64" --noconfirm -Sw secret
+          arm_pkg=$(find "$work/pacman-cache-arm64" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print -quit)
+          test -n "$arm_pkg"
+          curl -fsSLo "$arm_pkg.sig" "$REPOSITORY_BASE/pacman/aarch64/$(basename "$arm_pkg").sig"
+          verify_signer "$arm_pkg.sig" "$arm_pkg" "$work/pacman-arm64-package-status"
+          bsdtar -xOf "$arm_pkg" .PKGINFO | grep -Fx "arch = aarch64"
+          bsdtar -xOf "$arm_pkg" .PKGINFO | grep -Fx "pkgver = $EXPECTED_VERSION-1"
