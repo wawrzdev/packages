@@ -26,8 +26,9 @@ jobs:
       - name: Exercise no-release bootstrap flow
         run: |
           mkdir -p /tmp/packages-bootstrap
+          printf '%s\n' '{"schema":1,"apps":{}}' > /tmp/packages-bootstrap/empty.json
           GH_TOKEN=unused python3 scripts/publish_release.py \
-            --manifest manifests/releases.json \
+            --manifest /tmp/packages-bootstrap/empty.json \
             --manifest-output /tmp/packages-bootstrap/releases.json \
             --output /tmp/packages-bootstrap/site \
             --formula-output /tmp/packages-bootstrap/formula.rb
