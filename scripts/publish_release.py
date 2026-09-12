@@ -411,7 +411,6 @@ def formula_text(release: VerifiedRelease, url_root: str | None = None) -> str:
     return f'''class {class_name} < Formula
   desc "{descriptions[app]}"
   homepage "https://github.com/{release.repo}"
-  version "{release.version}"
   license "MIT"
 {dependencies}
   on_macos do
