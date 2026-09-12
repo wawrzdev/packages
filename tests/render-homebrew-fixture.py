@@ -36,4 +36,7 @@ for app in ("secret", "snip", "wtf"):
         checksums[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     release = VerifiedRelease(app, f"wawrzdev/{app}", "v1.2.3", "1.2.3", 1, "a" * 40,
                               assets, checksums, {}, 1)
-    (root / f"{app}.rb").write_text(formula_text(release, root.as_uri()))
+    # file:// URLs lack Homebrew's GitHub release-tag version inference.
+    formula = formula_text(release, root.as_uri()).replace(
+        '  license "MIT"', '  version "1.2.3"\n  license "MIT"', 1)
+    (root / f"{app}.rb").write_text(formula)
