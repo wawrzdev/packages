@@ -3,8 +3,14 @@ name: Verify production package installs
 on:
   workflow_dispatch:
     inputs:
+      tool:
+        description: Published CLI to verify
+        required: true
+        default: secret
+        type: choice
+        options: [secret, snip, wtf]
       release_tag:
-        description: Published secret release to verify
+        description: Published release tag to verify
         required: true
         default: v0.1.0
         type: string
@@ -17,6 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  TOOL: ${{ inputs.tool }}
   RELEASE_TAG: ${{ inputs.release_tag }}
   PRIMARY_FINGERPRINT: CA9E472DA65EAAC61A29DF2C6BC9CD87B018E5C9
   SIGNING_FINGERPRINT: 3B4493F499C7D2EC0F8965DC410405C255323B8C
@@ -34,16 +41,18 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, re
+          if os.environ["TOOL"] not in {"secret", "snip", "wtf"}:
+              raise SystemExit("unsupported tool")
           tag = os.environ["RELEASE_TAG"]
           if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
               raise SystemExit(f"invalid stable release tag: {tag!r}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               print(f"version={tag[1:]}", file=output)
           PY
-          gh release verify "$RELEASE_TAG" --repo wawrzdev/secret
-          test "$(gh api "repos/wawrzdev/secret/releases/tags/$RELEASE_TAG" --jq '.draft')" = false
-          test "$(gh api "repos/wawrzdev/secret/releases/tags/$RELEASE_TAG" --jq '.prerelease')" = false
-          test "$(gh api "repos/wawrzdev/secret/releases/tags/$RELEASE_TAG" --jq '.immutable')" = true
+          gh release verify "$RELEASE_TAG" --repo "wawrzdev/$TOOL"
+          test "$(gh api "repos/wawrzdev/$TOOL/releases/tags/$RELEASE_TAG" --jq '.draft')" = false
+          test "$(gh api "repos/wawrzdev/$TOOL/releases/tags/$RELEASE_TAG" --jq '.prerelease')" = false
+          test "$(gh api "repos/wawrzdev/$TOOL/releases/tags/$RELEASE_TAG" --jq '.immutable')" = true
 
   homebrew:
     needs: release-ready
@@ -60,9 +69,9 @@ jobs:
           EXPECTED_VERSION: ${{ needs.release-ready.outputs.version }}
         run: |
           brew tap wawrzdev/packages https://github.com/wawrzdev/packages.git
-          brew install wawrzdev/packages/secret
-          brew test wawrzdev/packages/secret
-          binary="$(brew --prefix wawrzdev/packages/secret)/bin/secret"
+          brew install "wawrzdev/packages/$TOOL"
+          brew test "wawrzdev/packages/$TOOL"
+          binary="$(brew --prefix "wawrzdev/packages/$TOOL")/bin/$TOOL"
           test -x "$binary"
           "$binary" --version | grep -F -- "$EXPECTED_VERSION"
 
@@ -105,7 +114,6 @@ jobs:
           sudo mkdir -p "$lists/partial"
           sudo chown -R _apt:root "$lists"
           printf '%s\n' "deb [arch=amd64,arm64 signed-by=$work/key.gpg] $REPOSITORY_BASE/apt stable main" > "$source"
-          sudo dpkg --add-architecture arm64
           apt_options=(
             -o "Dir::Etc::sourcelist=$source"
             -o Dir::Etc::sourceparts=-
@@ -113,9 +121,16 @@ jobs:
             -o APT::Get::List-Cleanup=0
           )
           sudo apt-get "${apt_options[@]}" update
-          sudo apt-get "${apt_options[@]}" install --yes secret
-          secret --version | grep -F -- "$EXPECTED_VERSION"
-          (cd "$work/apt-download" && apt-get "${apt_options[@]}" download secret:arm64)
+          # Keep Ubuntu indexes available so declared runtime dependencies resolve.
+          sudo cp "$source" /etc/apt/sources.list.d/wawrzdev-packages.list
+          sudo apt-get update
+          sudo apt-get install --yes "$TOOL"
+          "$TOOL" --version | grep -F -- "$EXPECTED_VERSION"
+          case "$TOOL" in
+            snip) dpkg-query -W git fzf gh; git --version; fzf --version; gh --version ;;
+            wtf) dpkg-query -W fzf; fzf --version ;;
+          esac
+          (cd "$work/apt-download" && apt-get "${apt_options[@]}" download "$TOOL:arm64")
           arm_deb=$(find "$work/apt-download" -maxdepth 1 -type f -name '*.deb' -print -quit)
           test -n "$arm_deb"
           test "$(dpkg-deb --field "$arm_deb" Architecture)" = arm64
@@ -162,24 +177,40 @@ jobs:
           EOF
           }
 
-          configure_pacman x86_64 amd64
-          sudo pacman --config "$work/pacman-amd64.conf" --root "$work/pacman-root-amd64" \
-            --dbpath "$work/pacman-db-amd64" --noconfirm -Sy secret
-          "$work/pacman-root-amd64/usr/bin/secret" --version | grep -F -- "$EXPECTED_VERSION"
+          # A real Arch userspace resolves and installs dependencies from core/extra.
+          docker run --rm --platform linux/amd64 -i \
+            -e TOOL -e EXPECTED_VERSION -e PRIMARY_FINGERPRINT -e REPOSITORY_BASE \
+            -v "$work:/verification" \
+            archlinux:base@sha256:b944cc65c5f28665dfd5fdbf5ed2997c88f5bb4a0aefac7ee8a7ef01893e5ed9 \
+            bash -euo pipefail -s <<'ARCH'
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm
+          pacman-key --add /verification/key.gpg
+          pacman-key --lsign-key "$PRIMARY_FINGERPRINT"
+          printf '\n[wawrzdev]\nSigLevel = Required DatabaseRequired\nServer = %s/pacman/$arch\n' "$REPOSITORY_BASE" >> /etc/pacman.conf
+          pacman -Sy --noconfirm "wawrzdev/$TOOL"
+          "$TOOL" --version | grep -F -- "$EXPECTED_VERSION"
+          case "$TOOL" in
+            snip) pacman -Q git fzf github-cli; git --version; fzf --version; gh --version ;;
+            wtf) pacman -Q fzf; fzf --version ;;
+          esac
+          pacman -Fy --noconfirm
+          pacman -F "usr/bin/$TOOL" | grep -F "$TOOL"
+          mkdir -p /verification/pacman-cache-amd64
+          cp /var/cache/pacman/pkg/"${TOOL}_${EXPECTED_VERSION}_linux_amd64.pkg.tar.zst" /verification/pacman-cache-amd64/
+          ARCH
           amd64_pkg=$(find "$work/pacman-cache-amd64" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print -quit)
           test -n "$amd64_pkg"
           curl -fsSLo "$work/verify-amd64.sig" "$REPOSITORY_BASE/pacman/x86_64/$(basename "$amd64_pkg").sig"
           verify_signer "$work/verify-amd64.sig" "$amd64_pkg" "$work/pacman-package-status"
-          sudo pacman --config "$work/pacman-amd64.conf" --root "$work/pacman-root-amd64" \
-            --dbpath "$work/pacman-db-amd64" --noconfirm -Fy
-          sudo pacman --config "$work/pacman-amd64.conf" --root "$work/pacman-root-amd64" \
-            --dbpath "$work/pacman-db-amd64" -F usr/bin/secret | grep -F secret
 
+          # Cross-architecture coverage authenticates only this package, not its dependencies.
           configure_pacman aarch64 arm64
           sudo pacman --config "$work/pacman-arm64.conf" --root "$work/pacman-root-arm64" \
             --dbpath "$work/pacman-db-arm64" --noconfirm -Sy
           sudo pacman --config "$work/pacman-arm64.conf" --root "$work/pacman-root-arm64" \
-            --dbpath "$work/pacman-db-arm64" --noconfirm -Sw secret
+            --dbpath "$work/pacman-db-arm64" --noconfirm -Sddw "$TOOL"
           arm_pkg=$(find "$work/pacman-cache-arm64" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print -quit)
           test -n "$arm_pkg"
           curl -fsSLo "$work/verify-arm64.sig" "$REPOSITORY_BASE/pacman/aarch64/$(basename "$arm_pkg").sig"

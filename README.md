@@ -70,6 +70,19 @@ The writer checks that the validated base is still current and uses a new `autom
 
 APT publishes `stable/main`, `Packages`/`Packages.gz`, SHA-256 by-hash copies, and dated `Release`, `InRelease`, and `Release.gpg` files with a seven-day validity window. A daily scheduled reconstruction refreshes that window. Pacman’s standard `repo-add` builds real package and file databases for `x86_64` and `aarch64`; every package and database has a detached signature, and Pages-compatible short database names are regular files. Only the current and previous version per tool are retained, and a final file-type allowlist enforces a 900 MiB deployment ceiling.
 
+## Live installation verification
+
+After a release appears in the published package repository, run
+[`verify-production-install.yml`](.github/workflows/verify-production-install.yml) with
+`tool` (`secret`, `snip`, or `wtf`) and `release_tag`. It installs and runs the selected
+CLI through Homebrew on macOS/Linux, APT on Ubuntu amd64, and Pacman inside an official
+Arch x86_64 container. Native installs resolve declared dependencies through the OS repositories.
+Published trust fingerprints and signed indexes/packages are checked throughout.
+
+ARM64 coverage verifies authenticated package retrieval, architecture, and version metadata;
+it does not execute ARM64 binaries or install their dependency trees. The manual check is read-only
+against the production repository and can run from a review branch before merging harness changes.
+
 ## Signing bootstrap and recovery
 
 Create a dedicated certification primary key and package-signing subkey on a trusted personal machine
