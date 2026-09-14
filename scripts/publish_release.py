@@ -537,18 +537,23 @@ def tar_entries(data: bytes, label: str) -> dict[str, tuple[tarfile.TarInfo, byt
     return entries
 
 
+def native_completion_paths(app: str, version: str) -> set[str]:
+    # Preserve immutable wtf 0.1.0 while newer packages avoid distro-owned files.
+    bash = f"usr/share/bash-completion/completions/{app}"
+    if app == "wtf" and semver_key(version) >= semver_key("0.1.1"):
+        bash = "etc/bash_completion.d/wawrzdev-wtf"
+    return {bash, f"usr/share/zsh/site-functions/_{app}",
+            f"usr/share/fish/vendor_completions.d/{app}.fish"}
+
+
 def validate_deb_package(path: Path, app: str, arch: str, fields: dict[str, str]) -> None:
     entries = tar_entries(read_ar_member(path, "data.tar"), "Debian data archive")
     binary_path = f"usr/bin/{app}"
     if binary_path not in entries or not entries[binary_path][0].mode & 0o111:
         raise PublishError(f"{path.name} lacks an executable {binary_path}")
     validate_binary(entries[binary_path][1][:64], "linux", arch)
-    expected = {
-        f"usr/share/bash-completion/completions/{app}",
-        f"usr/share/zsh/site-functions/_{app}",
-        f"usr/share/fish/vendor_completions.d/{app}.fish",
-    }
-    found = {name for name in entries if name.startswith(("usr/share/bash-completion/", "usr/share/zsh/", "usr/share/fish/"))}
+    expected = native_completion_paths(app, fields["Version"])
+    found = {name for name in entries if name.startswith(("etc/bash_completion.d/", "usr/share/bash-completion/", "usr/share/zsh/", "usr/share/fish/"))}
     if found != expected:
         raise PublishError(f"{path.name} has unexpected completion paths")
     if any(not entries[name][0].mode & 0o444 or entries[name][0].mode & 0o111 for name in found):
@@ -564,12 +569,8 @@ def validate_arch_package(path: Path, app: str, goarch: str, fields: dict[str, l
     if binary_path not in entries or not entries[binary_path][0].mode & 0o111:
         raise PublishError(f"{path.name} lacks an executable {binary_path}")
     validate_binary(entries[binary_path][1][:64], "linux", goarch)
-    expected = {
-        f"usr/share/bash-completion/completions/{app}",
-        f"usr/share/zsh/site-functions/_{app}",
-        f"usr/share/fish/vendor_completions.d/{app}.fish",
-    }
-    found = {name for name in entries if name.startswith(("usr/share/bash-completion/", "usr/share/zsh/", "usr/share/fish/"))}
+    expected = native_completion_paths(app, fields["pkgver"][0].removesuffix("-1"))
+    found = {name for name in entries if name.startswith(("etc/bash_completion.d/", "usr/share/bash-completion/", "usr/share/zsh/", "usr/share/fish/"))}
     if found != expected or set(fields.get("depend", [])) != DEPENDENCIES["pacman"][app]:
         raise PublishError(f"{path.name} has unexpected completions or dependencies")
     if any(not entries[name][0].mode & 0o444 or entries[name][0].mode & 0o111 for name in found):
