@@ -113,7 +113,8 @@ jobs:
           mkdir -p "$work/apt-download"
           sudo mkdir -p "$lists/partial"
           sudo chown -R _apt:root "$lists"
-          printf '%s\n' "deb [arch=amd64,arm64 signed-by=$work/key.gpg] $REPOSITORY_BASE/apt stable main" > "$source"
+          sudo install -m 0644 "$work/key.gpg" /usr/share/keyrings/wawrzdev-packages.gpg
+          printf '%s\n' "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/wawrzdev-packages.gpg] $REPOSITORY_BASE/apt stable main" > "$source"
           apt_options=(
             -o "Dir::Etc::sourcelist=$source"
             -o Dir::Etc::sourceparts=-
