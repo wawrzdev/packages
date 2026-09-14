@@ -51,6 +51,58 @@
         "tag": "v0.1.0",
         "version": "0.1.0"
       }
+    ],
+    "snip": [
+      {
+        "assets": {
+          "archive:darwin:amd64": {
+            "digest": "sha256:a090783f747e34239e4f44770203014101b2ec2ec7a9b6e09cf8e5ed839cc70f",
+            "id": 563958705,
+            "name": "snip_0.1.0_darwin_amd64.tar.gz"
+          },
+          "archive:darwin:arm64": {
+            "digest": "sha256:ae8d85cb4709e4dfb874de59abaf28cb2de5247c792339c8e209ed509f6a9cbc",
+            "id": 563958703,
+            "name": "snip_0.1.0_darwin_arm64.tar.gz"
+          },
+          "archive:linux:amd64": {
+            "digest": "sha256:1454b534a68a8e092a920b9cbfec2e6dc0615f982272e7f0100ebc76134dd933",
+            "id": 563958707,
+            "name": "snip_0.1.0_linux_amd64.tar.gz"
+          },
+          "archive:linux:arm64": {
+            "digest": "sha256:9b4de356bb2e6f06d9c9005f5f3e0a6ae8b3c39bc03847da548488af8066f095",
+            "id": 563958704,
+            "name": "snip_0.1.0_linux_arm64.tar.gz"
+          },
+          "deb:amd64": {
+            "digest": "sha256:7d881bcbb2c0b5c61a6200d62c57eb888fba2c7a17c44ee8457d0b3bb12aeed7",
+            "id": 563958731,
+            "name": "snip_0.1.0_linux_amd64.deb"
+          },
+          "deb:arm64": {
+            "digest": "sha256:22237fe88a9d54e25899dd4be2bc09e1e265b41061dcfabeb6ffe33e6ec46023",
+            "id": 563958726,
+            "name": "snip_0.1.0_linux_arm64.deb"
+          },
+          "pacman:amd64": {
+            "digest": "sha256:33e11a534ff4c27039f25ef005f5f00436bd227c899fd83015a7a0dad8ef7bac",
+            "id": 563958724,
+            "name": "snip_0.1.0_linux_amd64.pkg.tar.zst"
+          },
+          "pacman:arm64": {
+            "digest": "sha256:55c61342a802073fb5a11cf8f3522f55cf95334b77c451d1e7fcfe104a42e096",
+            "id": 563958721,
+            "name": "snip_0.1.0_linux_arm64.pkg.tar.zst"
+          }
+        },
+        "checksums_asset_id": 563958748,
+        "release_id": 388613350,
+        "repository": "wawrzdev/snip",
+        "source_sha": "236d0362a7f5674de7ae815020e0e194df93d3df",
+        "tag": "v0.1.0",
+        "version": "0.1.0"
+      }
     ]
   },
   "schema": 1
