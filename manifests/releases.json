@@ -103,6 +103,58 @@
         "tag": "v0.1.0",
         "version": "0.1.0"
       }
+    ],
+    "wtf": [
+      {
+        "assets": {
+          "archive:darwin:amd64": {
+            "digest": "sha256:79fa1a37372e6a7843be7bfa47bd9520fc4da1406f828ceb736e6b1a31ddc67f",
+            "id": 563984665,
+            "name": "wtf_0.1.0_darwin_amd64.tar.gz"
+          },
+          "archive:darwin:arm64": {
+            "digest": "sha256:ec51372bbd8ad616b52fd80585b51a7c884b12d155c74062fcf28c2031b4cc7a",
+            "id": 563984664,
+            "name": "wtf_0.1.0_darwin_arm64.tar.gz"
+          },
+          "archive:linux:amd64": {
+            "digest": "sha256:32f6d6bbbbb75b8c487bd93ae32a2e31980aaaccbf87d8c5fcca2be6b598097c",
+            "id": 563984663,
+            "name": "wtf_0.1.0_linux_amd64.tar.gz"
+          },
+          "archive:linux:arm64": {
+            "digest": "sha256:a5427e2995fc0aaa6a3e52592c0738ede4490d658ee2681ba9f3124ff45a1105",
+            "id": 563984667,
+            "name": "wtf_0.1.0_linux_arm64.tar.gz"
+          },
+          "deb:amd64": {
+            "digest": "sha256:34008b6e96b6e4ff3f5d8b52b8ff6a6253c42c68a50582be6ba2b8cb01fbc720",
+            "id": 563984695,
+            "name": "wtf_0.1.0_linux_amd64.deb"
+          },
+          "deb:arm64": {
+            "digest": "sha256:4a075bf8f55fbbe00b406816d5641abee5a9b7fe67157a496860aee1ad53892a",
+            "id": 563984685,
+            "name": "wtf_0.1.0_linux_arm64.deb"
+          },
+          "pacman:amd64": {
+            "digest": "sha256:aabb68d437b4180d3a23ffa034f60472c42680b3a8e698dda858db97fae45327",
+            "id": 563984684,
+            "name": "wtf_0.1.0_linux_amd64.pkg.tar.zst"
+          },
+          "pacman:arm64": {
+            "digest": "sha256:dc8a4e32dbcb021e6f387a61688bd780fb7f6b1b6fdfa6b010b19cfd07540b0d",
+            "id": 563984682,
+            "name": "wtf_0.1.0_linux_arm64.pkg.tar.zst"
+          }
+        },
+        "checksums_asset_id": 563984712,
+        "release_id": 388622505,
+        "repository": "wawrzdev/wtf",
+        "source_sha": "294a32748c66c32e86f47e71df8989c187949d7b",
+        "tag": "v0.1.0",
+        "version": "0.1.0"
+      }
     ]
   },
   "schema": 1
