@@ -168,8 +168,8 @@ jobs:
           "$work/pacman-root-amd64/usr/bin/secret" --version | grep -F -- "$EXPECTED_VERSION"
           amd64_pkg=$(find "$work/pacman-cache-amd64" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print -quit)
           test -n "$amd64_pkg"
-          curl -fsSLo "$amd64_pkg.sig" "$REPOSITORY_BASE/pacman/x86_64/$(basename "$amd64_pkg").sig"
-          verify_signer "$amd64_pkg.sig" "$amd64_pkg" "$work/pacman-package-status"
+          curl -fsSLo "$work/verify-amd64.sig" "$REPOSITORY_BASE/pacman/x86_64/$(basename "$amd64_pkg").sig"
+          verify_signer "$work/verify-amd64.sig" "$amd64_pkg" "$work/pacman-package-status"
           sudo pacman --config "$work/pacman-amd64.conf" --root "$work/pacman-root-amd64" \
             --dbpath "$work/pacman-db-amd64" --noconfirm -Fy
           sudo pacman --config "$work/pacman-amd64.conf" --root "$work/pacman-root-amd64" \
@@ -182,7 +182,7 @@ jobs:
             --dbpath "$work/pacman-db-arm64" --noconfirm -Sw secret
           arm_pkg=$(find "$work/pacman-cache-arm64" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print -quit)
           test -n "$arm_pkg"
-          curl -fsSLo "$arm_pkg.sig" "$REPOSITORY_BASE/pacman/aarch64/$(basename "$arm_pkg").sig"
-          verify_signer "$arm_pkg.sig" "$arm_pkg" "$work/pacman-arm64-package-status"
+          curl -fsSLo "$work/verify-arm64.sig" "$REPOSITORY_BASE/pacman/aarch64/$(basename "$arm_pkg").sig"
+          verify_signer "$work/verify-arm64.sig" "$arm_pkg" "$work/pacman-arm64-package-status"
           bsdtar -xOf "$arm_pkg" .PKGINFO | grep -Fx "arch = aarch64"
           bsdtar -xOf "$arm_pkg" .PKGINFO | grep -Fx "pkgver = $EXPECTED_VERSION-1"
