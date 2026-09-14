@@ -48,18 +48,22 @@ def fake_binary(os_name: str, arch: str) -> bytes:
     return b"\xcf\xfa\xed\xfe" + (0x01000007 if arch == "amd64" else 0x0100000C).to_bytes(4, "little") + bytes(56)
 
 
-def deb_bytes(app: str, version: str, arch: str) -> bytes:
+def deb_bytes(app: str, version: str, arch: str, bash_path: str | None = None) -> bytes:
+    bash_path = bash_path or ("etc/bash_completion.d/wawrzdev-wtf" if app == "wtf" and version != "0.1.0"
+                              else "usr/share/bash-completion/completions/" + app)
     deps = {"secret": "", "snip": "Depends: git, fzf, gh\n", "wtf": "Depends: fzf\n"}[app]
     control = f"Package: {app}\nVersion: {version}\nArchitecture: {arch}\nMaintainer: Test <test@example.com>\n{deps}Description: test package\n".encode()
     binary = "./usr/bin/" + app
     data = {binary: fake_binary("linux", arch)}
-    data.update({"./usr/share/bash-completion/completions/" + app: b"bash",
+    data.update({"./" + bash_path: b"bash",
                  "./usr/share/zsh/site-functions/_" + app: b"zsh",
                  "./usr/share/fish/vendor_completions.d/" + app + ".fish": b"fish"})
     return b"!<arch>\n" + ar_member("debian-binary", b"2.0\n") + ar_member("control.tar.gz", tar_bytes({"./control": control})) + ar_member("data.tar.gz", tar_bytes(data, modes={binary: 0o755}))
 
 
-def pkg_bytes(app: str, version: str, arch: str) -> bytes:
+def pkg_bytes(app: str, version: str, arch: str, bash_path: str | None = None) -> bytes:
+    bash_path = bash_path or ("etc/bash_completion.d/wawrzdev-wtf" if app == "wtf" and version != "0.1.0"
+                              else "usr/share/bash-completion/completions/" + app)
     depends = {"secret": "", "snip": "depend = git\ndepend = fzf\ndepend = github-cli\n", "wtf": "depend = fzf\n"}[app]
     info = (f"pkgname = {app}\npkgver = {version}-1\narch = {arch}\npkgdesc = test package\n"
             f"url = https://github.com/wawrzdev/{app}\nbuilddate = 1700000000\npackager = Test <test@example.com>\n"
@@ -67,7 +71,7 @@ def pkg_bytes(app: str, version: str, arch: str) -> bytes:
     binary = "usr/bin/" + app
     goarch = "amd64" if arch == "x86_64" else "arm64"
     files = {".PKGINFO": info, binary: fake_binary("linux", goarch),
-             "usr/share/bash-completion/completions/" + app: b"bash",
+             bash_path: b"bash",
              "usr/share/zsh/site-functions/_" + app: b"zsh",
              "usr/share/fish/vendor_completions.d/" + app + ".fish": b"fish"}
     return tar_bytes(files, "w:", {binary: 0o755})
@@ -99,6 +103,36 @@ def release_fixture(root: Path, app: str = "secret", version: str = "1.2.3"):
 
 
 class PublisherTests(unittest.TestCase):
+    def test_wtf_native_completion_transition_preserves_archived_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            releases = []
+            for version in ("0.1.0", "0.1.1"):
+                source = root / version
+                source.mkdir()
+                releases.append(release_fixture(source, "wtf", version))
+            publisher.publish(releases, root / "site", timestamp=1700000000)
+            self.assertEqual(4, len(list((root / "site" / "apt").rglob("*.deb"))))
+            self.assertEqual(4, len(list((root / "site" / "pacman").rglob("*.pkg.tar.zst"))))
+
+    def test_wtf_native_completion_paths_are_exact_for_each_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for version, wrong_path in (
+                ("0.1.1", "usr/share/bash-completion/completions/wtf"),
+                ("0.1.0", "etc/bash_completion.d/wawrzdev-wtf"),
+                ("0.1.1", "etc/bash_completion.d/other"),
+            ):
+                with self.subTest(version=version, path=wrong_path):
+                    deb = root / "wtf.deb"
+                    deb.write_bytes(deb_bytes("wtf", version, "amd64", wrong_path))
+                    with self.assertRaisesRegex(publisher.PublishError, "completion"):
+                        publisher.validate_deb_package(deb, "wtf", "amd64", publisher.deb_control(deb))
+                    package = root / "wtf.pkg.tar.zst"
+                    package.write_bytes(pkg_bytes("wtf", version, "x86_64", wrong_path))
+                    with self.assertRaisesRegex(publisher.PublishError, "completion"):
+                        publisher.validate_arch_package(package, "wtf", "amd64", publisher.pkginfo(package))
+
     def test_verify_release_uses_authoritative_ids_digests_and_exact_asset_set(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
