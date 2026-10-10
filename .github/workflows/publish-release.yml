@@ -40,7 +40,7 @@ jobs:
         run: |
           python3 scripts/publish_release.py --manifest manifests/releases.json \
             --manifest-output build/releases.json --output build/site --formula-output build/unused.rb
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.publish.outputs.changed == 'true'
         with:
           name: verified-package-repositories
@@ -69,7 +69,7 @@ jobs:
           PACKAGES_GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
           PACKAGES_GPG_FINGERPRINT: ${{ vars.PACKAGES_GPG_FINGERPRINT }}
         run: bash scripts/sign-repositories.sh packages build/site
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-signed-repositories
           path: build
@@ -96,7 +96,7 @@ jobs:
           sudo apt-get install --yes pacman-package-manager libarchive-tools
       - name: Build package and file indexes without private keys
         run: bash scripts/build-pacman-repositories.sh build/site
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: indexed-package-repositories
           path: build
