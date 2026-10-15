@@ -7,21 +7,21 @@ class Wtf < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/wawrzdev/wtf/releases/download/v0.1.1/wtf_0.1.1_darwin_arm64.tar.gz"
-      sha256 "c8c860f168f4e523c850f71c02af183b3f2e66de48e70d8c7d387cedc996be56"
+      url "https://github.com/wawrzdev/wtf/releases/download/v0.2.0/wtf_0.2.0_darwin_arm64.tar.gz"
+      sha256 "354c277c592e59895f44247e9c0c8a5a1186de71d9ff8a7bf5f7641e9d885807"
     else
-      url "https://github.com/wawrzdev/wtf/releases/download/v0.1.1/wtf_0.1.1_darwin_amd64.tar.gz"
-      sha256 "52c34cf2a73b9c80c5c34c6f45454949778a57b58b20f5e9e811532548cfd9f4"
+      url "https://github.com/wawrzdev/wtf/releases/download/v0.2.0/wtf_0.2.0_darwin_amd64.tar.gz"
+      sha256 "ffbd829bbbd207ced3deb1f1568a9ead9d21306d4b5c7e0561970f6346852dca"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/wawrzdev/wtf/releases/download/v0.1.1/wtf_0.1.1_linux_arm64.tar.gz"
-      sha256 "ae574b6b34331d4a054f9319c17272616cdea640822d14eac0263786a401c10b"
+      url "https://github.com/wawrzdev/wtf/releases/download/v0.2.0/wtf_0.2.0_linux_arm64.tar.gz"
+      sha256 "1b28b1e226370db508cbc4959a0a1e4d3ba3076b7efc193bc30516a39fd66923"
     else
-      url "https://github.com/wawrzdev/wtf/releases/download/v0.1.1/wtf_0.1.1_linux_amd64.tar.gz"
-      sha256 "0ffe0e6c63240f173d8e9c509e4f7b03654fda67e005e9b3c14309f0bfecfa6d"
+      url "https://github.com/wawrzdev/wtf/releases/download/v0.2.0/wtf_0.2.0_linux_amd64.tar.gz"
+      sha256 "f088ecd5f6d4e3a6344359bc452a07b50c0fcc06474a53763ec3562381a342e8"
     end
   end
 
